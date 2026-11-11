@@ -1,0 +1,31 @@
+Rodei o Docker aqui e anotei alguns pontos que vi explorando o banco pré-processado no Jupyter (cotacoes_convertidas_kg, filtrando outlier_suspeito = 0):
+
+O que apareceu nos dados:
+
+Base atualizada gerou 2.253.313 cotações no banco tratado (1.828.678 já convertidas pra R$/kg e 709 outliers sinalizados).
+
+Intervalo geral vai de 2010 a 2026 (2.550 datas), mas a sobreposição forte entre CEASAs diferentes começa em 04/01/2022 (de 2022 pra cá, vários pares têm entre 950 e 1.184 dias exatamente em comum).
+
+Tem 49 regras de conversão inferida prontas no banco (pimentão cx 10kg, beterraba cx 20kg, maxixe cx 18kg, morango cx 1.5kg, etc.) que hoje ficam de fora só porque falta definir a variável CEASA_DATA_LIMITE_INFERENCIA.
+
+Mesmo sem juntar variedades diferentes, produtos como cenoura (6 CEASAs), melão (6), cebola (5), batata doce (5), batata (5), morango (4), tomate (4) e beterraba já têm bastante cobertura.
+
+Primeiros testes de Granger que rodei (2022–2026, retorno log diário, ffill de até 3 dias úteis, lag = 5):
+
+Morango (Recife x Curitiba, 1.205 dias úteis): deu efeito unidirecional Curitiba -> Recife (F = 3.186 vs 0.404 no sentido contrário).
+
+Melão (Recife x Maringá, 1.201 dias úteis): deu efeito unidirecional ao contrário, Recife -> Maringá (F = 2.409 vs 0.469).
+
+Cebola (Recife x Maringá, 1.203 dias úteis): deu efeito nos dois sentidos (F = 8.941 de Recife -> Maringá e F = 2.734 de Maringá -> Recife).
+
+Parâmetros que precisamos fechar agora:
+
+Data limite de treino (CEASA_DATA_LIMITE_INFERENCIA): fechar em 2024-11-26 (80% das datas) ou 2024-12-31 pra ativar as 49 regras inferidas?
+
+Período das séries: recortar de 2022-01-04 em diante (onde os mercados têm ~1.000+ datas em comum)?
+
+Pares analisados: comparar todos os entrepostos (incluindo dentro do mesmo estado, ex: Curitiba x Maringá) ou só entre CEASAs de estados diferentes?
+
+Frequência e buracos: consolidar por dia útil (mediana/média do dia) preenchendo falhas curtas de até 3 dias (ffill), ou agregar por semana?
+
+Lags do Granger: testar uma janela fixa (ex: 1 a 5 ou 1 a 10 dias úteis) ou selecionar o lag ótimo por AIC/BIC em cada par?
