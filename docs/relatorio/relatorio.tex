@@ -94,9 +94,11 @@ suficientes e registrar limitações sem criar valores artificiais. O processo
 gera um novo banco SQLite, preserva o banco bruto e mantém indicadores de
 qualidade, regras de conversão e possíveis \textit{outliers}. Na última
 execução realizada, 2.380.608 registros brutos resultaram em 2.372.920
-cotações consolidadas. Após a exclusão de 124.337 registros sem mapeamento
-suficiente, foram gravadas 2.248.583 cotações no banco derivado. O fluxo de
-pré-processamento permanece em desenvolvimento.
+cotações consolidadas. Após a exclusão de 87.820 registros sem mapeamento
+suficiente, foram gravadas 2.285.100 cotações no banco derivado, das quais
+2.080.417 compõem a camada analítica principal. O pré-processamento da base
+atual foi concluído; as regras de conversão inferida permanecem candidatas até
+a definição do período de treino.
 
 \noindent\textbf{Palavras-chave:} CEASA; mineração de dados; séries temporais;
 pré-processamento; preços agrícolas; Efeito Dominó.
@@ -178,7 +180,8 @@ transformações e evitando conversões sem evidência suficiente.
     \item interpretar unidades, embalagens, contagens e intervalos;
     \item calcular preços por quilograma, unidade-base ou item quando possível;
     \item identificar registros inadequados para a camada analítica;
-    \item sinalizar possíveis \textit{outliers} sem excluir eventos reais;
+    \item sinalizar e preservar possíveis \textit{outliers}, mantendo-os fora
+    da camada analítica principal sem apagar os valores originais;
     \item gerar um banco derivado reproduzível e validado.
 \end{itemize}
 
@@ -219,7 +222,7 @@ daqueles provenientes do complemento PROHORT.
 
 A execução mais recente partiu de 2.380.608 cotações. Após a seleção das
 coletas mais recentes e a consolidação de versões, foram obtidas 2.372.920
-cotações. A exclusão de mapeamentos insuficientes resultou em 2.248.583
+cotações. A exclusão de mapeamentos insuficientes resultou em 2.285.100
 cotações gravadas no banco derivado. A Tabela~\ref{tab:diagnostico} resume os
 principais indicadores observados nessa execução.
 
@@ -234,13 +237,14 @@ principais indicadores observados nessa execução.
         \midrule
         Cotações no banco bruto & 2.380.608 \\
         Cotações consolidadas & 2.372.920 \\
-        Cotações excluídas por mapeamento insuficiente & 124.337 \\
-        Cotações gravadas no banco derivado & 2.248.583 \\
+        Cotações excluídas por mapeamento insuficiente & 87.820 \\
+        Cotações gravadas no banco derivado & 2.285.100 \\
         Identidades com múltiplas versões mantidas & 5.987 \\
         Apresentações catalogadas & 1.941 \\
-        Cotações com preço comum válido & 2.065.510 \\
-        Cotações com preço comum por kg & 1.824.617 \\
-        Possíveis \textit{outliers} sinalizados & 708 \\
+        Cotações com preço comum válido & 2.081.125 \\
+        Cotações com preço comum por kg & 1.824.620 \\
+        Cotações na camada analítica principal & 2.080.417 \\
+        \textit{Outliers} desconsiderados da camada principal & 708 \\
         Regras de conversão inferida candidatas & 69 \\
         Regras com critérios estruturais atendidos & 49 \\
         \bottomrule
@@ -251,9 +255,9 @@ principais indicadores observados nessa execução.
     Fonte: resumo da execução mais recente do pré-processamento.
 \end{table}
 
-Essas quantidades descrevem a execução mais recente, realizada durante o
-desenvolvimento do pré-processamento. Novos ajustes podem alterar os resultados
-apresentados.
+Essas quantidades descrevem a execução concluída para a base atual. Uma nova
+execução somente produzirá números diferentes se a base de origem ou os
+critérios configuráveis forem alterados.
 
 % ==========================================
 % 5. METODOLOGIA
@@ -325,6 +329,11 @@ origem \texttt{PE} aparece concatenado à unidade de massa. Dessa forma,
 \texttt{Cx.20 KgPE} é interpretado como 20 kg com o sufixo PE, enquanto
 \texttt{Cx.23 a27KgPE} permanece como intervalo de 23 a 27 kg.
 
+O parser também reconhece intervalos com hífen antes da unidade, como
+\texttt{Cx.17a18-Kg}, preserva pesos totais explícitos quando o texto contém
+um intervalo independente de itens e identifica contagens explícitas de
+unidades ou vasos mesmo quando não existe unidade estruturada na fonte.
+
 \subsection{Conversões inferidas}
 
 Apresentações sem peso explícito podem ser comparadas com apresentações que
@@ -342,9 +351,10 @@ para a inferência, as regras são apenas registradas como candidatas.
 
 Na versão atual do código, cotações que permanecem com os status
 \path{sem_unidade}, \path{sem_quantidade_exata} ou \path{ambigua} não são
-gravadas na tabela final. As quantidades excluídas por
-cada motivo são registradas em \texttt{resumo\_preprocessamento}, enquanto os
-dados originais continuam disponíveis no banco bruto.
+gravadas na tabela final. As quantidades excluídas por cada motivo são
+registradas em \texttt{resumo\_preprocessamento}. As próprias linhas ficam
+disponíveis em \texttt{cotacoes\_excluidas\_mapeamento}, além de continuarem
+preservadas no banco bruto.
 
 Preços comuns nulos, iguais a zero ou negativos são marcados como inválidos e
 ficam fora de \texttt{cotacoes\_analiticas}. Quando a relação
@@ -355,22 +365,32 @@ incorreta não pode ser determinada.
 
 Os possíveis \textit{outliers} são identificados dentro de grupos com o mesmo
 produto, entreposto e apresentação. Com pelo menos cinco observações, preços
-por kg inferiores a 0,1 ou superiores a 10 vezes a mediana do grupo são
-sinalizados. Eles não são removidos automaticamente, pois uma variação extrema
-pode representar tanto erro quanto um evento econômico relevante.
+por kg inferiores a 0,1 vez ou superiores a 10 vezes a mediana do grupo são
+sinalizados. Preço comum igual a R\$~0,01 ou razão inferior a 0,01 ou superior
+a 20 recebe a classificação \texttt{erro\_provavel}. Entre os demais casos,
+grupos com pelo menos cinco ocorrências suspeitas recebem
+\texttt{inconsistencia\_recorrente}; os restantes são classificados como
+\texttt{extremo\_isolado}.
+
+Os valores sinalizados não são apagados nem corrigidos. Eles permanecem na
+tabela principal e nas visões de auditoria, mas ficam fora de
+\texttt{cotacoes\_analiticas\_principais}. Assim, não existe uma etapa de
+revisão manual obrigatória para que a base seja utilizada.
 
 \subsection{Estrutura e validação da saída}
 
 O banco derivado contém a tabela principal
-\path{cotacoes_preprocessadas}, a visão \path{cotacoes_analiticas}, o
-catálogo de apresentações, as regras de conversão, os possíveis
+\path{cotacoes_preprocessadas}, as visões \path{cotacoes_analiticas} e
+\path{cotacoes_analiticas_principais}, a tabela auditável de exclusões, o
+catálogo de apresentações, as regras de conversão, as classificações de
 \textit{outliers}, o resumo e os parâmetros da execução.
 
 Ao final, são verificadas a integridade interna do SQLite, a unicidade das
 identidades, a consistência dos marcadores, a cobertura do catálogo e a
-igualdade entre as quantidades consolidadas, gravadas e excluídas. O fluxo
-incorpora atualmente as exclusões de mapeamentos insuficientes e o tratamento
-de \texttt{KgPE}, mas permanece sujeito a novos ajustes durante o projeto.
+igualdade entre as quantidades consolidadas, gravadas e excluídas. A validação
+também confere a cobertura auditável das exclusões e garante que nenhum
+\textit{outlier} permaneça na camada analítica principal. Com a execução
+validada, o pré-processamento da base atual está concluído.
 
 \printbibliography[heading=bibintoc,title={Referências}]
 

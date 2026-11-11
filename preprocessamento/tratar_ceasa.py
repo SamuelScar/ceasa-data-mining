@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 MARKET_UNIT = "entreposto"
 MASS_UNITS = {"kg": 1.0, "g": 0.001}
 VOLUME_UNITS = {"l": 1.0, "ml": 0.001}
@@ -55,6 +55,9 @@ MASS_TOKENS = {
 DEFAULT_OUTLIER_LOW = 0.1
 DEFAULT_OUTLIER_HIGH = 10.0
 DEFAULT_OUTLIER_MIN_GROUP = 5
+DEFAULT_OUTLIER_PROBABLE_LOW = 0.01
+DEFAULT_OUTLIER_PROBABLE_HIGH = 20.0
+DEFAULT_OUTLIER_RECURRENT_MIN = 5
 DEFAULT_INFERENCE_MIN_SUPPORT = 5
 DEFAULT_INFERENCE_MIN_DATES = 3
 EXCLUDED_MAPPING_STATUSES = frozenset(
@@ -68,7 +71,7 @@ WEIGHT_PATTERN = re.compile(
 )
 WEIGHT_INTERVAL_PATTERN = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*(?:-|\u2013|\u2014|a|ate)\s*"
-    r"(\d+(?:[.,]\d+)?)\s*"
+    r"(\d+(?:[.,]\d+)?)\s*(?:-|\u2013|\u2014)?\s*"
     r"(kg|quilo(?:s)?|quilograma(?:s)?|g|gr|grs|grama(?:s)?)\b",
     flags=re.IGNORECASE,
 )
@@ -78,6 +81,10 @@ INTERVAL_PATTERN = re.compile(
 )
 NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)?")
 MALFORMED_KG_PE_PATTERN = re.compile(r"kg(?=pe\b)", flags=re.IGNORECASE)
+EXPLICIT_ITEM_COUNT_PATTERN = re.compile(
+    r"\b(\d+(?:[.,]\d+)?)\s*(?:un(?:i|id(?:ade)?s?)?|vasos?)\b",
+    flags=re.IGNORECASE,
+)
 
 
 CATALOG_COLUMNS = [
@@ -107,6 +114,7 @@ CATALOG_COLUMNS = [
     "nivel_confianca",
     "origem_regra",
     "cotacoes_associadas",
+    "cotacoes_excluidas_associadas",
     "produtos_associados",
     "ceasas_associadas",
     "entrepostos_associados",
@@ -236,6 +244,39 @@ FACT_COLUMNS = [
 ]
 
 
+EXCLUDED_COLUMNS = [
+    "cotacao_id",
+    "chave_identidade",
+    "coleta_id",
+    "data_cotacao",
+    "ceasa_id",
+    "ceasa_slug",
+    "entreposto_id",
+    "entreposto_slug",
+    "entreposto_nome",
+    "produto_id",
+    "produto_alias_id",
+    "produto_original",
+    "produto_normalizado_banco",
+    "produto_chave_textual",
+    "apresentacao_unidade_id",
+    "unidade_original",
+    "unidade_normalizada",
+    "embalagem",
+    "quantidade_minima",
+    "quantidade_maxima",
+    "detalhe_unidade",
+    "preco_minimo_consolidado",
+    "preco_comum_consolidado",
+    "preco_maximo_consolidado",
+    "status_mapeamento",
+    "observacao_conversao",
+    "origem_dado",
+    "versoes_identidade",
+    "houve_conflito_versoes",
+]
+
+
 def normalizar_texto(value: object) -> str | None:
     """Cria uma chave textual sem alterar o valor original."""
     if value is None or pd.isna(value):
@@ -320,6 +361,25 @@ def intervalo_peso_kg(texto_original: object) -> tuple[float, float] | None:
     minimum = float(match.group(1).replace(",", ".")) * factor
     maximum = float(match.group(2).replace(",", ".")) * factor
     return min(minimum, maximum), max(minimum, maximum)
+
+
+def quantidade_itens_explicita(texto_original: object) -> tuple[float, str] | None:
+    """Extrai uma contagem inequívoca de unidades ou vasos do texto original."""
+    if texto_original is None or pd.isna(texto_original):
+        return None
+    matches = list(EXPLICIT_ITEM_COUNT_PATTERN.finditer(str(texto_original)))
+    if not matches:
+        return None
+    quantities = {
+        float(match.group(1).replace(",", "."))
+        for match in matches
+    }
+    if len(quantities) != 1:
+        return None
+    quantity = quantities.pop()
+    if not math.isfinite(quantity) or quantity <= 0:
+        return None
+    return quantity, matches[0].group(0)
 
 
 def interpretar_peso_na_apresentacao(
@@ -412,6 +472,10 @@ def construir_catalogo_apresentacoes(
     catalog: list[dict[str, object]] = []
     for row in presentations.itertuples(index=False):
         symbol = normalizar_texto(row.unidade_sigla)
+        stored_exact_quantity = quantidade_exata(
+            row.quantidade_minima,
+            row.quantidade_maxima,
+        )
         has_interval = apresentacao_tem_intervalo(
             row.unidade_original,
             row.unidade_normalizada,
@@ -419,7 +483,7 @@ def construir_catalogo_apresentacoes(
         exact_quantity = (
             None
             if has_interval
-            else quantidade_exata(row.quantidade_minima, row.quantidade_maxima)
+            else stored_exact_quantity
         )
         unit_base = symbol
         base_quantity: float | None = exact_quantity
@@ -447,35 +511,35 @@ def construir_catalogo_apresentacoes(
             unit_base = "kg"
             item_factor = None
             item_quantity = None
-            if exact_quantity is not None:
-                total_weight = exact_quantity * MASS_UNITS[symbol]
+            weight_interval = intervalo_peso_kg(row.unidade_original)
+            if has_interval and weight_interval is not None:
+                weight_minimum, weight_maximum = weight_interval
+                base_quantity = None
+                mapping_status = "intervalo_massa"
+                evidence = str(row.unidade_original)
+                confidence = "alta"
+                rule_origin = "parser_deterministico"
+                observation = (
+                    "Intervalo de peso preservado; conversao para um unico "
+                    "preco por kg nao aplicada."
+                )
+            elif stored_exact_quantity is not None:
+                total_weight = stored_exact_quantity * MASS_UNITS[symbol]
                 weight_minimum = total_weight
                 weight_maximum = total_weight
                 base_quantity = total_weight
                 conversion_type = "exata"
                 mapping_status = "convertida_exata"
                 formula = (
-                    f"peso_total_kg = {exact_quantity:g} {symbol} "
+                    f"peso_total_kg = {stored_exact_quantity:g} {symbol} "
                     f"* {MASS_UNITS[symbol]:g}"
                 )
                 evidence = str(row.unidade_original)
                 confidence = "alta"
                 rule_origin = "parser_deterministico"
             else:
-                weight_interval = intervalo_peso_kg(row.unidade_original)
-                if has_interval and weight_interval is not None:
-                    weight_minimum, weight_maximum = weight_interval
-                    mapping_status = "intervalo_massa"
-                    evidence = str(row.unidade_original)
-                    confidence = "alta"
-                    rule_origin = "parser_deterministico"
-                    observation = (
-                        "Intervalo de peso preservado; conversao para um unico "
-                        "preco por kg nao aplicada."
-                    )
-                else:
-                    mapping_status = "sem_quantidade_exata"
-                    observation = "Peso ausente ou sem quantidade exata."
+                mapping_status = "sem_quantidade_exata"
+                observation = "Peso ausente ou sem quantidade exata."
         elif symbol:
             if symbol in VOLUME_UNITS:
                 dimension = "volume"
@@ -585,6 +649,7 @@ def construir_catalogo_apresentacoes(
             item_factor = None
             item_quantity = None
             weight_interval = intervalo_peso_kg(row.unidade_original)
+            explicit_item_count = quantidade_itens_explicita(row.unidade_original)
             weight_text = texto_para_leitura_peso(row.unidade_original)
             weight_matches = (
                 [] if weight_text is None else list(WEIGHT_PATTERN.finditer(weight_text))
@@ -615,6 +680,21 @@ def construir_catalogo_apresentacoes(
                 confidence = "alta"
                 rule_origin = "parser_deterministico"
                 observation = "Peso total explícito identificado no texto original."
+            elif explicit_item_count is not None and weight_interval is None:
+                item_quantity, evidence = explicit_item_count
+                dimension = "contagem"
+                unit_base = "un"
+                base_quantity = item_quantity
+                item_factor = 1.0
+                conversion_type = "incerta"
+                mapping_status = "unidade_nativa"
+                formula = f"quantidade_itens = {item_quantity:g} un"
+                confidence = "alta"
+                rule_origin = "parser_deterministico"
+                observation = (
+                    "Contagem explícita preservada; falta peso por item para "
+                    "conversão em kg."
+                )
             else:
                 mapping_status = "sem_unidade"
                 observation = "Apresentação sem unidade identificada."
@@ -649,6 +729,7 @@ def construir_catalogo_apresentacoes(
                 "nivel_confianca": confidence,
                 "origem_regra": rule_origin,
                 "cotacoes_associadas": 0,
+                "cotacoes_excluidas_associadas": 0,
                 "produtos_associados": 0,
                 "ceasas_associadas": 0,
                 "entrepostos_associados": 0,
@@ -705,6 +786,7 @@ def criar_esquema(connection: sqlite3.Connection) -> None:
             nivel_confianca TEXT NOT NULL,
             origem_regra TEXT NOT NULL,
             cotacoes_associadas INTEGER NOT NULL DEFAULT 0,
+            cotacoes_excluidas_associadas INTEGER NOT NULL DEFAULT 0,
             produtos_associados INTEGER NOT NULL DEFAULT 0,
             ceasas_associadas INTEGER NOT NULL DEFAULT 0,
             entrepostos_associados INTEGER NOT NULL DEFAULT 0
@@ -839,13 +921,58 @@ def criar_esquema(connection: sqlite3.Connection) -> None:
             UNIQUE (produto_id, apresentacao_unidade_id)
         );
 
+        CREATE TABLE cotacoes_excluidas_mapeamento (
+            cotacao_id INTEGER PRIMARY KEY,
+            chave_identidade TEXT NOT NULL UNIQUE,
+            coleta_id INTEGER NOT NULL,
+            data_cotacao TEXT NOT NULL,
+            ceasa_id INTEGER,
+            ceasa_slug TEXT,
+            entreposto_id INTEGER,
+            entreposto_slug TEXT,
+            entreposto_nome TEXT,
+            produto_id INTEGER,
+            produto_alias_id INTEGER,
+            produto_original TEXT,
+            produto_normalizado_banco TEXT,
+            produto_chave_textual TEXT,
+            apresentacao_unidade_id INTEGER,
+            unidade_original TEXT,
+            unidade_normalizada TEXT,
+            embalagem TEXT,
+            quantidade_minima REAL,
+            quantidade_maxima REAL,
+            detalhe_unidade TEXT,
+            preco_minimo_consolidado REAL,
+            preco_comum_consolidado REAL,
+            preco_maximo_consolidado REAL,
+            status_mapeamento TEXT NOT NULL CHECK (
+                status_mapeamento IN (
+                    'ambigua', 'sem_quantidade_exata', 'sem_unidade'
+                )
+            ),
+            observacao_conversao TEXT,
+            origem_dado TEXT NOT NULL CHECK (origem_dado IN ('crawler', 'prohort')),
+            versoes_identidade INTEGER NOT NULL DEFAULT 1,
+            houve_conflito_versoes INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (apresentacao_unidade_id)
+                REFERENCES catalogo_apresentacoes(apresentacao_unidade_id)
+        );
+
         CREATE TABLE outliers_suspeitos (
             cotacao_id INTEGER PRIMARY KEY,
             metodo TEXT NOT NULL,
             tamanho_grupo INTEGER NOT NULL,
+            outliers_no_grupo INTEGER NOT NULL,
             mediana_grupo REAL NOT NULL,
             razao_mediana REAL NOT NULL,
-            classificacao TEXT NOT NULL DEFAULT 'pendente',
+            classificacao TEXT NOT NULL CHECK (
+                classificacao IN (
+                    'erro_provavel',
+                    'inconsistencia_recorrente',
+                    'extremo_isolado'
+                )
+            ),
             observacao TEXT,
             FOREIGN KEY (cotacao_id) REFERENCES cotacoes_preprocessadas(cotacao_id)
         );
@@ -910,6 +1037,25 @@ def atualizar_cobertura_catalogo(connection: sqlite3.Connection) -> None:
                 ceasa_count,
                 warehouse_count,
             ) in coverage
+        ],
+    )
+    excluded_coverage = connection.execute(
+        """
+        SELECT apresentacao_unidade_id, COUNT(*)
+        FROM cotacoes_excluidas_mapeamento
+        WHERE apresentacao_unidade_id IS NOT NULL
+        GROUP BY apresentacao_unidade_id
+        """
+    ).fetchall()
+    connection.executemany(
+        """
+        UPDATE catalogo_apresentacoes
+        SET cotacoes_excluidas_associadas = ?
+        WHERE apresentacao_unidade_id = ?
+        """,
+        [
+            (excluded_count, presentation_id)
+            for presentation_id, excluded_count in excluded_coverage
         ],
     )
 
@@ -1593,6 +1739,15 @@ def inserir_cotacoes(
         total_without_unit += int(without_unit.sum())
         total_without_exact_quantity += int(without_exact_quantity.sum())
         total_ambiguous += int(ambiguous.sum())
+        excluded = processed.loc[excluded_mapping, EXCLUDED_COLUMNS].copy()
+        if not excluded.empty:
+            excluded.to_sql(
+                "cotacoes_excluidas_mapeamento",
+                target,
+                if_exists="append",
+                index=False,
+                chunksize=1_000,
+            )
         processed = processed.loc[~excluded_mapping].copy()
         total_persisted += len(processed)
         conflicts += int(processed["houve_conflito_versoes"].sum())
@@ -1641,6 +1796,9 @@ def marcar_outliers(
     low: float,
     high: float,
     minimum_group: int,
+    probable_low: float,
+    probable_high: float,
+    recurrent_minimum: int,
 ) -> int:
     comparable = pd.read_sql_query(
         """
@@ -1649,6 +1807,7 @@ def marcar_outliers(
             produto_id,
             entreposto_id,
             apresentacao_unidade_id,
+            preco_comum_consolidado,
             preco_comum_kg
         FROM cotacoes_preprocessadas
         WHERE preco_comum_kg IS NOT NULL AND preco_comum_kg > 0
@@ -1676,14 +1835,44 @@ def marcar_outliers(
     if flagged.empty:
         return 0
 
+    flagged["outliers_no_grupo"] = flagged.groupby(keys, dropna=False)[
+        "cotacao_id"
+    ].transform("size")
+    price_is_cent = np.isclose(
+        flagged["preco_comum_consolidado"],
+        0.01,
+        rtol=0,
+        atol=1e-9,
+    )
+    extreme_ratio = flagged["razao_mediana"].lt(probable_low) | flagged[
+        "razao_mediana"
+    ].gt(probable_high)
+    recurrent_group = flagged["outliers_no_grupo"].ge(recurrent_minimum)
     flagged["metodo"] = "razao_mediana_produto_entreposto_apresentacao"
-    flagged["classificacao"] = "pendente"
-    flagged["observacao"] = None
+    flagged["classificacao"] = np.select(
+        [price_is_cent | extreme_ratio, recurrent_group],
+        ["erro_provavel", "inconsistencia_recorrente"],
+        default="extremo_isolado",
+    )
+    flagged["observacao"] = np.select(
+        [
+            price_is_cent,
+            extreme_ratio,
+            recurrent_group,
+        ],
+        [
+            "Preço comum consolidado igual a R$ 0,01.",
+            "Razão em relação à mediana ultrapassa o limite de erro provável.",
+            "Ocorrência recorrente no mesmo produto, entreposto e apresentação; possível inconsistência no denominador do preço.",
+        ],
+        default="Ocorrência extrema isolada ou pouco recorrente, desconsiderada da análise principal.",
+    )
     flagged[
         [
             "cotacao_id",
             "metodo",
             "tamanho_grupo",
+            "outliers_no_grupo",
             "mediana_grupo",
             "razao_mediana",
             "classificacao",
@@ -1701,7 +1890,11 @@ def marcar_outliers(
         UPDATE cotacoes_preprocessadas
         SET
             outlier_suspeito = 1,
-            outlier_status = 'pendente',
+            outlier_status = (
+                SELECT outlier.classificacao
+                FROM outliers_suspeitos outlier
+                WHERE outlier.cotacao_id = cotacoes_preprocessadas.cotacao_id
+            ),
             outlier_razao_mediana = (
                 SELECT outlier.razao_mediana
                 FROM outliers_suspeitos outlier
@@ -1728,6 +1921,8 @@ def criar_indices_e_views(connection: sqlite3.Connection) -> None:
             ON cotacoes_preprocessadas(apresentacao_unidade_id);
         CREATE INDEX idx_cotacoes_preprocessadas_outlier
             ON cotacoes_preprocessadas(outlier_suspeito);
+        CREATE INDEX idx_cotacoes_preprocessadas_outlier_status
+            ON cotacoes_preprocessadas(outlier_status);
         CREATE INDEX idx_cotacoes_preprocessadas_produto_valido
             ON cotacoes_preprocessadas(produto_valido);
         CREATE INDEX idx_cotacoes_preprocessadas_status_mapeamento
@@ -1742,6 +1937,12 @@ def criar_indices_e_views(connection: sqlite3.Connection) -> None:
             ON regras_conversao_inferida(
                 produto_chave_textual, apresentacao_unidade_id, origem_dado
             );
+        CREATE INDEX idx_cotacoes_excluidas_status
+            ON cotacoes_excluidas_mapeamento(status_mapeamento);
+        CREATE INDEX idx_cotacoes_excluidas_apresentacao
+            ON cotacoes_excluidas_mapeamento(apresentacao_unidade_id);
+        CREATE INDEX idx_outliers_classificacao
+            ON outliers_suspeitos(classificacao);
 
         CREATE VIEW cotacoes_analiticas AS
         SELECT *
@@ -1754,6 +1955,11 @@ def criar_indices_e_views(connection: sqlite3.Connection) -> None:
         SELECT *
         FROM cotacoes_analiticas
         WHERE ordem_precos_inconsistente = 0;
+
+        CREATE VIEW cotacoes_analiticas_principais AS
+        SELECT *
+        FROM cotacoes_analiticas
+        WHERE outlier_suspeito = 0;
 
         CREATE VIEW cotacoes_convertidas_kg AS
         SELECT *
@@ -1784,11 +1990,31 @@ def criar_indices_e_views(connection: sqlite3.Connection) -> None:
         FROM catalogo_apresentacoes
         WHERE status_mapeamento IN ('intervalo_massa', 'intervalo_quantidade');
 
-        CREATE VIEW outliers_pendentes AS
-        SELECT quote.*, outlier.metodo, outlier.tamanho_grupo, outlier.mediana_grupo
+        CREATE VIEW outliers_desconsiderados_analise AS
+        SELECT
+            quote.*,
+            outlier.metodo,
+            outlier.tamanho_grupo,
+            outlier.outliers_no_grupo,
+            outlier.mediana_grupo,
+            outlier.classificacao,
+            outlier.observacao
         FROM cotacoes_analiticas quote
         JOIN outliers_suspeitos outlier ON outlier.cotacao_id = quote.cotacao_id
-        WHERE outlier.classificacao = 'pendente';
+        WHERE quote.outlier_suspeito = 1;
+
+        CREATE VIEW outliers_erros_provaveis AS
+        SELECT
+            quote.*,
+            outlier.metodo,
+            outlier.tamanho_grupo,
+            outlier.outliers_no_grupo,
+            outlier.mediana_grupo,
+            outlier.classificacao,
+            outlier.observacao
+        FROM cotacoes_analiticas quote
+        JOIN outliers_suspeitos outlier ON outlier.cotacao_id = quote.cotacao_id
+        WHERE outlier.classificacao = 'erro_provavel';
         """
     )
 
@@ -1807,6 +2033,12 @@ def gerar_resumo(connection: sqlite3.Connection) -> dict[str, int]:
             "WHERE ordem_precos_inconsistente = 1"
         ),
         "cotacoes_analiticas": "SELECT COUNT(*) FROM cotacoes_analiticas",
+        "cotacoes_analiticas_principais": (
+            "SELECT COUNT(*) FROM cotacoes_analiticas_principais"
+        ),
+        "cotacoes_excluidas_auditaveis": (
+            "SELECT COUNT(*) FROM cotacoes_excluidas_mapeamento"
+        ),
         "apresentacoes_catalogadas": "SELECT COUNT(*) FROM catalogo_apresentacoes",
         "apresentacoes_unidade_nativa": (
             "SELECT COUNT(*) FROM catalogo_apresentacoes "
@@ -1853,6 +2085,18 @@ def gerar_resumo(connection: sqlite3.Connection) -> dict[str, int]:
             "SELECT COUNT(*) FROM cotacoes_preprocessadas WHERE origem_dado = 'prohort'"
         ),
         "outliers_suspeitos": "SELECT COUNT(*) FROM outliers_suspeitos",
+        "outliers_erro_provavel": (
+            "SELECT COUNT(*) FROM outliers_suspeitos "
+            "WHERE classificacao = 'erro_provavel'"
+        ),
+        "outliers_inconsistencia_recorrente": (
+            "SELECT COUNT(*) FROM outliers_suspeitos "
+            "WHERE classificacao = 'inconsistencia_recorrente'"
+        ),
+        "outliers_extremo_isolado": (
+            "SELECT COUNT(*) FROM outliers_suspeitos "
+            "WHERE classificacao = 'extremo_isolado'"
+        ),
         "identidades_multiplas_versoes": (
             "SELECT COUNT(*) FROM cotacoes_preprocessadas "
             "WHERE houve_conflito_versoes = 1"
@@ -1888,6 +2132,7 @@ def validar_saida(
     connection: sqlite3.Connection,
     total_esperado: int,
     apresentacoes_esperadas: int,
+    excluidas_esperadas: int,
 ) -> None:
     problemas: list[str] = []
 
@@ -1903,6 +2148,17 @@ def validar_saida(
     if total_gravado != total_esperado:
         problemas.append(
             f"esperadas {total_esperado} cotacoes, mas foram gravadas {total_gravado}"
+        )
+
+    total_excluido = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM cotacoes_excluidas_mapeamento"
+        ).fetchone()[0]
+    )
+    if total_excluido != excluidas_esperadas:
+        problemas.append(
+            f"esperadas {excluidas_esperadas} cotacoes excluidas auditaveis, "
+            f"mas foram gravadas {total_excluido}"
         )
 
     total_catalogado = int(
@@ -1927,6 +2183,21 @@ def validar_saida(
     if cobertura_catalogo[0] != cobertura_catalogo[1]:
         problemas.append(
             "a cobertura registrada no catalogo difere das cotacoes com apresentacao"
+        )
+
+    cobertura_exclusoes = connection.execute(
+        """
+        SELECT
+            (SELECT COALESCE(SUM(cotacoes_excluidas_associadas), 0)
+             FROM catalogo_apresentacoes),
+            (SELECT COUNT(*)
+             FROM cotacoes_excluidas_mapeamento
+             WHERE apresentacao_unidade_id IS NOT NULL)
+        """
+    ).fetchone()
+    if cobertura_exclusoes[0] != cobertura_exclusoes[1]:
+        problemas.append(
+            "a cobertura de exclusoes no catalogo difere da tabela de auditoria"
         )
 
     unidades_nativas_incorretas = int(
@@ -2027,6 +2298,36 @@ def validar_saida(
     if outliers_inconsistentes:
         problemas.append(
             f"{outliers_inconsistentes} marcadores de outlier inconsistentes"
+        )
+
+    status_outliers_inconsistentes = int(
+        connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM cotacoes_preprocessadas quote
+            LEFT JOIN outliers_suspeitos outlier
+                ON outlier.cotacao_id = quote.cotacao_id
+            WHERE quote.outlier_status <> CASE
+                WHEN outlier.cotacao_id IS NULL THEN 'nao_suspeito'
+                ELSE outlier.classificacao
+            END
+            """
+        ).fetchone()[0]
+    )
+    if status_outliers_inconsistentes:
+        problemas.append(
+            f"{status_outliers_inconsistentes} classificacoes de outlier inconsistentes"
+        )
+
+    outliers_na_view_principal = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM cotacoes_analiticas_principais "
+            "WHERE outlier_suspeito = 1"
+        ).fetchone()[0]
+    )
+    if outliers_na_view_principal:
+        problemas.append(
+            f"{outliers_na_view_principal} outliers na view principal"
         )
 
     identidades_duplicadas = int(
@@ -2136,6 +2437,9 @@ def construir_banco(args: argparse.Namespace) -> Path:
         "outlier_low": args.outlier_low,
         "outlier_high": args.outlier_high,
         "outlier_min_group": args.outlier_min_group,
+        "outlier_probable_low": args.outlier_probable_low,
+        "outlier_probable_high": args.outlier_probable_high,
+        "outlier_recurrent_min": args.outlier_recurrent_min,
         "data_limite_inferencia": args.data_limite_inferencia,
         "inferencia_min_suporte": args.inferencia_min_suporte,
         "inferencia_min_datas": args.inferencia_min_datas,
@@ -2205,6 +2509,9 @@ def construir_banco(args: argparse.Namespace) -> Path:
             low=args.outlier_low,
             high=args.outlier_high,
             minimum_group=args.outlier_min_group,
+            probable_low=args.outlier_probable_low,
+            probable_high=args.outlier_probable_high,
+            recurrent_minimum=args.outlier_recurrent_min,
         )
         print(f"Outliers apenas sinalizados: {outliers:,}", flush=True)
         target.commit()
@@ -2226,6 +2533,7 @@ def construir_banco(args: argparse.Namespace) -> Path:
             target,
             processing_stats["cotacoes_gravadas"],
             len(catalog),
+            processing_stats["cotacoes_excluidas_mapeamento"],
         )
         target.execute(
             """
@@ -2271,6 +2579,16 @@ def validar_argumentos(args: argparse.Namespace) -> None:
         raise ValueError("--outlier-high deve ser maior que um.")
     if args.outlier_min_group < 2:
         raise ValueError("--outlier-min-group deve ser pelo menos dois.")
+    if not 0 < args.outlier_probable_low < args.outlier_low:
+        raise ValueError(
+            "--outlier-probable-low deve estar entre zero e --outlier-low."
+        )
+    if args.outlier_probable_high <= args.outlier_high:
+        raise ValueError(
+            "--outlier-probable-high deve ser maior que --outlier-high."
+        )
+    if args.outlier_recurrent_min < 2:
+        raise ValueError("--outlier-recurrent-min deve ser pelo menos dois.")
     if args.data_limite_inferencia:
         try:
             datetime.strptime(args.data_limite_inferencia, "%Y-%m-%d")
@@ -2304,6 +2622,21 @@ def main(argv: list[str] | None = None) -> int:
         "--outlier-min-group",
         type=int,
         default=DEFAULT_OUTLIER_MIN_GROUP,
+    )
+    parser.add_argument(
+        "--outlier-probable-low",
+        type=float,
+        default=DEFAULT_OUTLIER_PROBABLE_LOW,
+    )
+    parser.add_argument(
+        "--outlier-probable-high",
+        type=float,
+        default=DEFAULT_OUTLIER_PROBABLE_HIGH,
+    )
+    parser.add_argument(
+        "--outlier-recurrent-min",
+        type=int,
+        default=DEFAULT_OUTLIER_RECURRENT_MIN,
     )
     parser.add_argument(
         "--data-limite-inferencia",
