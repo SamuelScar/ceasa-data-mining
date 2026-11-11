@@ -1,0 +1,19 @@
+[project]
+name = "ceasa-data-mining"
+version = "0.1.0"
+description = "Mineração de dados para análise da propagação de preços entre CEASAs."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "jupyterlab",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "scikit-learn",
+    "scipy",
+    "seaborn",
+    "statsmodels",
+]
+
+[dependency-groups]
+dev = []

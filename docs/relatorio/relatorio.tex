@@ -1,0 +1,377 @@
+\documentclass[12pt,a4paper]{article}
+
+% ==========================================
+% PACOTES E FORMATAÇÃO
+% ==========================================
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{setspace}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{csquotes}
+\usepackage{newtxtext,newtxmath}
+\usepackage[
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue
+]{hyperref}
+\usepackage[
+    backend=biber,
+    style=numeric,
+    sorting=none
+]{biblatex}
+
+\addbibresource{refs.bib}
+
+\geometry{a4paper, margin=2cm}
+\onehalfspacing
+
+\begin{document}
+\pagenumbering{gobble}
+
+% ==========================================
+% CAPA
+% ==========================================
+
+\begin{titlepage}
+    \centering
+    \normalsize
+    Departamento de Ciência da Computação -- UFSJ/DCOMP\\
+
+    \vspace*{5cm}
+
+    {\large
+        \textbf{\MakeUppercase{Mineração de dados aplicada à dinâmica de
+        preços nas CEASAs}}
+    }\\[0.5cm]
+
+    {\normalsize
+        Pré-processamento para análise do Efeito Dominó
+    }\\[2cm]
+
+    {\normalsize
+        Autores:\\[0.3cm]
+        Arthur Henrique Moreira Santos\\
+        Gabriel da Silva Souza\\
+        Samuel de Souza Carvalho Almeida\\
+    }
+
+    \vspace{0.5cm}
+    {\normalsize Ciência da Computação -- UFSJ/DCOMP}
+
+    \vfill
+
+    {\large São João del-Rei -- MG}\\
+    {\large 2026}
+\end{titlepage}
+
+\pagenumbering{roman}
+\tableofcontents
+\newpage
+\pagenumbering{arabic}
+
+% ==========================================
+% RESUMO
+% ==========================================
+
+\section*{Resumo}
+\addcontentsline{toc}{section}{Resumo}
+
+Este trabalho investiga a dinâmica de preços de produtos agrícolas
+comercializados em diferentes Centrais de Abastecimento (CEASAs). A primeira
+etapa da pesquisa concentra-se no Efeito Dominó, entendido como a possibilidade
+de variações de preço observadas em um mercado contribuírem para antecipar
+variações posteriores em outro. Os dados utilizados foram coletados por um
+\textit{crawler} e organizados em um banco SQLite com mais de dois milhões de
+cotações. Antes da análise temporal, foi desenvolvido um pré-processamento para
+consolidar versões da mesma cotação, normalizar produtos e apresentações,
+converter preços para unidades comparáveis quando existem evidências
+suficientes e registrar limitações sem criar valores artificiais. O processo
+gera um novo banco SQLite, preserva o banco bruto e mantém indicadores de
+qualidade, regras de conversão e possíveis \textit{outliers}. Na última
+execução realizada, 2.380.608 registros brutos resultaram em 2.372.920
+cotações consolidadas. Após a exclusão de 124.337 registros sem mapeamento
+suficiente, foram gravadas 2.248.583 cotações no banco derivado. O fluxo de
+pré-processamento permanece em desenvolvimento.
+
+\noindent\textbf{Palavras-chave:} CEASA; mineração de dados; séries temporais;
+pré-processamento; preços agrícolas; Efeito Dominó.
+
+% ==========================================
+% 1. INTRODUÇÃO
+% ==========================================
+
+\section{Introdução}
+
+As CEASAs concentram a comercialização atacadista de produtos agrícolas e
+produzem cotações que refletem condições de oferta, demanda, sazonalidade,
+logística e características regionais. Quando observados ao longo do tempo,
+esses registros permitem investigar se movimentos de preço permanecem locais
+ou se aparecem posteriormente em outros mercados.
+
+O projeto considera três frentes de investigação: propagação de preços entre
+mercados, assimetria entre aumentos e reduções e períodos de elevada
+volatilidade. A etapa atual concentra-se na propagação de preços, denominada
+Efeito Dominó. As perguntas que orientam essas frentes são apresentadas na
+Seção de Objetivos.
+
+Uma análise desse tipo exige séries comparáveis. Entretanto, a base contém
+diferenças de escrita nos produtos, múltiplas formas de apresentação,
+quantidades expressas em massa ou contagem, intervalos de peso, versões da
+mesma cotação e valores potencialmente suspeitos. Comparar diretamente os
+preços originais poderia confundir uma mudança de embalagem com uma variação
+econômica real.
+
+Diante disso, a primeira entrega do projeto foi a construção de um fluxo de
+pré-processamento rastreável. Seu objetivo é produzir uma base derivada mais
+adequada às futuras análises temporais, sem modificar o banco bruto e sem
+antecipar decisões relativas aos produtos, períodos ou modelos que serão
+utilizados posteriormente.
+
+O uso do termo Efeito Dominó neste projeto é uma analogia à propagação
+sequencial descrita em outras áreas. Na segurança de processos, por exemplo,
+um evento inicial pode produzir consequências sucessivas em outras unidades
+\cite{swuste2019}. Neste trabalho, a propagação investigada não envolve
+acidentes: corresponde à possível transmissão temporal de informação entre os
+preços observados em mercados distintos.
+
+% ==========================================
+% 2. OBJETIVOS
+% ==========================================
+
+\section{Objetivos}
+
+\subsection{Perguntas de pesquisa}
+
+O projeto foi organizado a partir das seguintes perguntas:
+
+\begin{enumerate}
+    \item \textbf{Efeito Dominó:} usar os preços de outras CEASAs ajuda a
+    prever aumentos de preços em um mercado específico?
+    \item \textbf{Efeito Foguete e Pena:} é possível identificar e prever
+    situações em que os preços sobem mais rápido do que caem entre diferentes
+    CEASAs?
+    \item \textbf{Agrupamento de Volatilidade:} é possível prever períodos de
+    grandes oscilações nos preços de produtos agrícolas comercializados nas
+    CEASAs?
+\end{enumerate}
+
+A etapa atual do trabalho concentra-se na primeira pergunta. As demais serão
+desenvolvidas posteriormente.
+
+\subsection{Objetivo geral}
+
+Preparar as cotações históricas das CEASAs para a futura investigação do
+Efeito Dominó entre entrepostos, preservando a rastreabilidade das
+transformações e evitando conversões sem evidência suficiente.
+
+\subsection{Objetivos específicos}
+
+\begin{itemize}
+    \item consolidar versões associadas à mesma cotação lógica;
+    \item normalizar diferenças textuais sem misturar automaticamente produtos
+    ou variedades distintas;
+    \item interpretar unidades, embalagens, contagens e intervalos;
+    \item calcular preços por quilograma, unidade-base ou item quando possível;
+    \item identificar registros inadequados para a camada analítica;
+    \item sinalizar possíveis \textit{outliers} sem excluir eventos reais;
+    \item gerar um banco derivado reproduzível e validado.
+\end{itemize}
+
+% ==========================================
+% 3. TRABALHOS RELACIONADOS
+% ==========================================
+
+\section{Trabalhos relacionados}
+
+\textcite{swuste2019} apresentam uma revisão histórica do conceito de efeito
+dominó em fábricas e agrupamentos da indústria química. Nesse contexto, o
+fenômeno é caracterizado por uma sequência na qual um evento inicial produz
+efeitos capazes de atingir outras unidades. Embora o domínio seja diferente,
+a noção de propagação espacial e sequencial contribui para delimitar a analogia
+empregada neste projeto. Aqui, os eventos analisados são movimentos de preço,
+e não acidentes industriais.
+
+No domínio de preços agrícolas, \textcite{oliveira2023} analisaram séries
+mensais dos tomates Longa Vida e Cajá comercializados em Fortaleza e Ibiapaba,
+no Ceará, entre janeiro de 2011 e dezembro de 2022. Utilizando causalidade de
+Granger, o estudo identificou relação bilateral para o tomate Longa Vida e
+relação unidirecional de Fortaleza para Ibiapaba no caso do tomate Cajá. Esse
+resultado demonstra a aplicação do teste à transmissão regional de preços de
+um produto agrícola e fornece uma referência metodológica direta para a
+primeira pergunta desta pesquisa.
+
+% ==========================================
+% 4. BASE DE DADOS
+% ==========================================
+
+\section{Caracterização da base de dados}
+
+A base de origem é o arquivo \texttt{data/cotacoes.sqlite}, produzido pelo
+processo de coleta das cotações. O banco relaciona cotações, produtos,
+apresentações, entrepostos, CEASAs, coletas e proveniências. A origem das
+observações também permite distinguir os registros coletados diretamente
+daqueles provenientes do complemento PROHORT.
+
+A execução mais recente partiu de 2.380.608 cotações. Após a seleção das
+coletas mais recentes e a consolidação de versões, foram obtidas 2.372.920
+cotações. A exclusão de mapeamentos insuficientes resultou em 2.248.583
+cotações gravadas no banco derivado. A Tabela~\ref{tab:diagnostico} resume os
+principais indicadores observados nessa execução.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Indicadores da execução mais recente do pré-processamento.}
+    \label{tab:diagnostico}
+    \small
+    \begin{tabular}{lr}
+        \toprule
+        \textbf{Indicador} & \textbf{Quantidade} \\
+        \midrule
+        Cotações no banco bruto & 2.380.608 \\
+        Cotações consolidadas & 2.372.920 \\
+        Cotações excluídas por mapeamento insuficiente & 124.337 \\
+        Cotações gravadas no banco derivado & 2.248.583 \\
+        Identidades com múltiplas versões mantidas & 5.987 \\
+        Apresentações catalogadas & 1.941 \\
+        Cotações com preço comum válido & 2.065.510 \\
+        Cotações com preço comum por kg & 1.824.617 \\
+        Possíveis \textit{outliers} sinalizados & 708 \\
+        Regras de conversão inferida candidatas & 69 \\
+        Regras com critérios estruturais atendidos & 49 \\
+        \bottomrule
+    \end{tabular}
+
+    \par\smallskip
+    \footnotesize
+    Fonte: resumo da execução mais recente do pré-processamento.
+\end{table}
+
+Essas quantidades descrevem a execução mais recente, realizada durante o
+desenvolvimento do pré-processamento. Novos ajustes podem alterar os resultados
+apresentados.
+
+% ==========================================
+% 5. METODOLOGIA
+% ==========================================
+
+\section{Metodologia do pré-processamento}
+
+\subsection{Ambiente e reprodutibilidade}
+
+O pré-processamento foi implementado em Python e executado em contêiner Docker.
+As dependências são gerenciadas pelo \texttt{uv}, enquanto o Docker Compose
+fornece um comando único para construção da imagem e execução do processo. O
+banco bruto é aberto somente para leitura, e o resultado é gravado em um novo
+arquivo, \texttt{data/cotacoes\_preprocessadas.sqlite}.
+
+A substituição da saída é atômica: o novo banco é construído em um arquivo
+temporário e somente substitui a versão anterior após a conclusão das
+validações. Assim, uma falha durante o processamento não sobrescreve uma saída
+válida nem altera a fonte original.
+
+\subsection{Seleção e consolidação das cotações}
+
+A identidade lógica de uma cotação representa a combinação de mercado,
+produto, apresentação e data, sem utilizar o preço como parte de sua definição.
+Uma mesma identidade pode aparecer em diferentes coletas ou possuir versões
+simultâneas com preços distintos.
+
+Para cada identidade, o processo seleciona a coleta mais recente registrada na
+tabela de proveniências. Quando a coleta escolhida contém mais de uma
+versão, os preços mínimo, comum e máximo são consolidados separadamente pela
+mediana. Essa regra evita escolher arbitrariamente uma das versões e reduz a
+influência de um valor isolado. O banco derivado mantém apenas uma linha por
+identidade e registra a quantidade de versões e a existência de conflito.
+
+\subsection{Normalização dos produtos}
+
+Os nomes dos produtos recebem uma chave textual sem diferenças de caixa,
+acentuação, espaços ou pontuação. A descrição original e o identificador do
+produto continuam preservados. A normalização permite reconhecer grafias
+equivalentes, mas não junta automaticamente variedades ou classificações que
+possam apresentar comportamentos de preço diferentes.
+
+Descrições sem conteúdo utilizável, como \texttt{*}, recebem o marcador
+\texttt{produto\_invalido}. Esses registros permanecem identificáveis no banco,
+mas não entram na visão analítica principal.
+
+\subsection{Tratamento das apresentações e unidades}
+
+As apresentações são classificadas segundo sua dimensão: massa, volume,
+contagem, unidade nativa ou combinação dessas formas. A apresentação original
+é preservada juntamente com a regra, a fórmula, a evidência e o nível de
+confiança utilizados na transformação.
+
+Quando o peso total está explícito, a conversão é classificada como
+\texttt{exata}. Quando existem quantidade de itens e peso individual, o peso
+total é calculado pela multiplicação desses valores e a conversão é
+\texttt{calculada}. Unidades como dúzia e cento são convertidas para 12 e 100
+itens, respectivamente, mas não recebem peso em quilogramas sem evidência do
+peso individual.
+
+Intervalos como \texttt{CX 25--28 KG} preservam os limites mínimo e máximo. Um
+valor central não é criado, pois isso introduziria uma precisão inexistente na
+fonte. O mesmo princípio é aplicado às apresentações ambíguas: quando não é
+possível determinar o denominador do preço, a conversão para R\$/kg não é
+realizada.
+
+Também foi tratada uma inconsistência textual específica na qual o sufixo de
+origem \texttt{PE} aparece concatenado à unidade de massa. Dessa forma,
+\texttt{Cx.20 KgPE} é interpretado como 20 kg com o sufixo PE, enquanto
+\texttt{Cx.23 a27KgPE} permanece como intervalo de 23 a 27 kg.
+
+\subsection{Conversões inferidas}
+
+Apresentações sem peso explícito podem ser comparadas com apresentações que
+possuem peso declarado para a mesma chave textual de produto, forma de
+apresentação e origem dos dados. Uma regra somente atende aos critérios
+estruturais quando candidato e âncora possuem ao menos cinco registros e três
+datas, e quando todos os pesos explícitos observados concordam.
+
+Os preços não são utilizados para escolher o peso inferido. Essa decisão evita
+aproximar artificialmente os preços entre CEASAs e produzir o padrão de
+propagação que a pesquisa pretende investigar. Sem uma data limite definida
+para a inferência, as regras são apenas registradas como candidatas.
+
+\subsection{Exclusões e indicadores de qualidade}
+
+Na versão atual do código, cotações que permanecem com os status
+\path{sem_unidade}, \path{sem_quantidade_exata} ou \path{ambigua} não são
+gravadas na tabela final. As quantidades excluídas por
+cada motivo são registradas em \texttt{resumo\_preprocessamento}, enquanto os
+dados originais continuam disponíveis no banco bruto.
+
+Preços comuns nulos, iguais a zero ou negativos são marcados como inválidos e
+ficam fora de \texttt{cotacoes\_analiticas}. Quando a relação
+$\text{mínimo} \leq \text{comum} \leq \text{máximo}$ não é respeitada, o preço
+comum tratado é mantido, mas os limites mínimo e máximo tratados ficam nulos.
+Essa decisão evita trocar ou ordenar automaticamente valores cuja coluna
+incorreta não pode ser determinada.
+
+Os possíveis \textit{outliers} são identificados dentro de grupos com o mesmo
+produto, entreposto e apresentação. Com pelo menos cinco observações, preços
+por kg inferiores a 0,1 ou superiores a 10 vezes a mediana do grupo são
+sinalizados. Eles não são removidos automaticamente, pois uma variação extrema
+pode representar tanto erro quanto um evento econômico relevante.
+
+\subsection{Estrutura e validação da saída}
+
+O banco derivado contém a tabela principal
+\path{cotacoes_preprocessadas}, a visão \path{cotacoes_analiticas}, o
+catálogo de apresentações, as regras de conversão, os possíveis
+\textit{outliers}, o resumo e os parâmetros da execução.
+
+Ao final, são verificadas a integridade interna do SQLite, a unicidade das
+identidades, a consistência dos marcadores, a cobertura do catálogo e a
+igualdade entre as quantidades consolidadas, gravadas e excluídas. O fluxo
+incorpora atualmente as exclusões de mapeamentos insuficientes e o tratamento
+de \texttt{KgPE}, mas permanece sujeito a novos ajustes durante o projeto.
+
+\printbibliography[heading=bibintoc,title={Referências}]
+
+\end{document}

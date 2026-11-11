@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Variaveis de ambiente e arquivos locais
+.env
+.env.*
+!.env.example
+*.log
+
+# Artefatos auxiliares do LaTeX
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+
+# Bancos, datasets e arquivos compactados locais
+data/
+*.sqlite
+*.sqlite-*
+*.db
+*.zip
+*.xz
+
+# Editores e sistema operacional
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
