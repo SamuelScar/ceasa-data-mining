@@ -13,6 +13,8 @@
 \usepackage{array}
 \usepackage{amsmath}
 \usepackage{csquotes}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
 \usepackage{newtxtext,newtxmath}
 \usepackage[
     colorlinks=true,
@@ -263,7 +265,48 @@ critérios configuráveis forem alterados.
 % 5. METODOLOGIA
 % ==========================================
 
-\section{Metodologia do pré-processamento}
+\section{Metodologia}
+
+\subsection{Fluxo geral}
+
+A Figura~\ref{fig:fluxo-granger} apresenta o fluxo geral definido até o
+momento. As etapas internas da análise de Granger serão detalhadas
+posteriormente, conforme o desenvolvimento dessa fase do projeto.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        node distance=8mm,
+        every node/.style={font=\small},
+        bloco/.style={
+            rectangle,
+            rounded corners,
+            draw=black,
+            align=center,
+            text width=4.2cm,
+            minimum height=1.8cm
+        },
+        seta/.style={-{Latex[length=2.5mm]}, thick}
+    ]
+        \node[bloco, fill=gray!12] (origem) {
+            \textbf{Fonte do dataset}\\
+            \texttt{cotacoes.sqlite}
+        };
+        \node[bloco, fill=blue!7, right=of origem] (preprocessamento) {
+            \textbf{Pré-processamento}\\
+            Tratamento e geração da base analítica
+        };
+        \node[bloco, fill=yellow!14, right=of preprocessamento] (granger) {
+            \textbf{Granger}\\
+            Análise do Efeito Dominó
+        };
+
+        \draw[seta] (origem) -- (preprocessamento);
+        \draw[seta] (preprocessamento) -- (granger);
+    \end{tikzpicture}
+    \caption{Fluxo geral atual da metodologia.}
+    \label{fig:fluxo-granger}
+\end{figure}
 
 \subsection{Ambiente e reprodutibilidade}
 
