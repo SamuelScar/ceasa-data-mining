@@ -14,6 +14,9 @@ A documentação do projeto está organizada em:
 - [bibliografia](docs/relatorio/refs.bib);
 - [artigos utilizados](docs/artigos/).
 
+O relatório é a documentação principal da metodologia, dos critérios de
+tratamento e dos resultados do trabalho.
+
 ## Pré-processamento
 
 O pré-processamento preserva o banco bruto e gera um novo SQLite com uma
@@ -23,9 +26,6 @@ qualidade.
 ```bash
 docker compose run --build --rm preprocessamento
 ```
-
-Consulte a [documentação do pré-processamento](preprocessamento/preprocessamento.md)
-para conhecer as transformações e decisões adotadas.
 
 ## Séries temporais e teste de Granger
 
@@ -40,9 +40,7 @@ docker compose run --build --rm granger
 O serviço utilizará
 `resultados/preprocessamento/cotacoes_preprocessadas.sqlite` e gerará
 `resultados/granger/granger.sqlite`, preservando as séries, diagnósticos e todos
-os testes realizados. Consulte a
-[documentação da etapa de Granger](granger/granger.md) para acompanhar as
-decisões metodológicas e as estruturas geradas.
+os testes realizados.
 
 ## Caracterização do Efeito Dominó
 
@@ -54,9 +52,7 @@ docker compose run --build --rm efeito-domino
 ```
 
 O processo gera `resultados/efeitos/domino/efeito_domino.sqlite` sem alterar os
-bancos anteriores. Consulte a
-[documentação do Efeito Dominó](efeitos/domino/efeito_domino.md) para conhecer
-a regra de classificação e os resultados atuais.
+bancos anteriores.
 
 ## Pipeline completo
 
@@ -67,9 +63,7 @@ docker compose run --build --rm pipeline-completo
 ```
 
 O comando mostra a etapa atual, a porcentagem geral, as etapas concluídas e
-restantes e o tempo decorrido. Consulte a
-[documentação do pipeline](pipeline/pipeline.md) para conhecer o fluxo e o
-comportamento em caso de falha.
+restantes e o tempo decorrido.
 
 ## Ambiente Python com Docker
 

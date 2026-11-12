@@ -92,16 +92,16 @@ organizados em um banco SQLite com mais de dois milhões de cotações. O fluxo
 executado até o momento compreende a preservação do banco bruto, o
 pré-processamento das cotações, a construção de séries temporais comparáveis,
 o teste de causalidade de Granger e a caracterização do Efeito Dominó. Na
-execução atual, 2.388.035 registros
-brutos resultaram em 2.295.094 cotações no banco derivado, das quais 1.833.726
-possuem preço comum em R\$/kg. O recorte temporal carregou 175.160 cotações e
+execução encadeada documentada, 2.362.506 registros
+brutos resultaram em 2.272.103 cotações no banco derivado, das quais 1.814.153
+possuem preço comum em R\$/kg. O recorte temporal carregou 174.687 cotações e
 produziu 252 pares candidatos entre mercados. Dos 134 pares elegíveis, todos
 atenderam aos critérios de estacionariedade; foram testadas 268 direções e 62
 apresentaram significância após a correção de Benjamini--Hochberg. Esses
 resultados são preliminares e representam evidência de precedência temporal e
 capacidade preditiva no sentido de Granger, não uma demonstração isolada de
 causalidade econômica direta. Nas 62 relações significativas foram encontrados
-6.149 choques na origem; 4.815 puderam ser classificados e 1.881 apresentaram
+6.138 choques na origem; 4.807 puderam ser classificados e 1.881 apresentaram
 resposta no destino dentro da janela de cinco dias úteis.
 
 \noindent\textbf{Palavras-chave:} CEASA; mineração de dados; séries temporais;
@@ -237,31 +237,33 @@ apresentações, entrepostos, CEASAs, coletas e proveniências. A origem das
 observações também permite distinguir os registros coletados diretamente
 daqueles provenientes do complemento PROHORT.
 
-A execução mais recente partiu de 2.388.035 cotações. Após a seleção das
-coletas mais recentes e a consolidação de versões, foram obtidas 2.380.218
-cotações. A exclusão de mapeamentos insuficientes resultou em 2.295.094
+A execução encadeada documentada partiu de um retrato com 2.362.506 cotações.
+Após a seleção das coletas mais recentes e a consolidação de versões, foram
+obtidas 2.355.195 identidades. A exclusão de mapeamentos insuficientes resultou
+em 2.272.103
 cotações gravadas no banco derivado. A Tabela~\ref{tab:diagnostico} resume os
 principais indicadores observados nessa execução.
 
 \begin{table}[htbp]
     \centering
-    \caption{Indicadores da execução mais recente do pré-processamento.}
+    \caption{Indicadores da execução encadeada documentada do pré-processamento.}
     \label{tab:diagnostico}
     \small
     \begin{tabular}{lr}
         \toprule
         \textbf{Indicador} & \textbf{Quantidade} \\
         \midrule
-        Cotações no banco bruto & 2.388.035 \\
-        Cotações consolidadas & 2.380.218 \\
-        Cotações excluídas por mapeamento insuficiente & 85.124 \\
-        Cotações gravadas no banco derivado & 2.295.094 \\
-        Identidades com múltiplas versões mantidas & 6.041 \\
-        Apresentações catalogadas & 1.941 \\
-        Cotações com preço comum válido & 2.091.042 \\
-        Cotações com preço comum por kg & 1.833.726 \\
-        Cotações na camada analítica principal & 2.090.331 \\
-        \textit{Outliers} desconsiderados da camada principal & 711 \\
+        Cotações no retrato do banco bruto & 2.362.506 \\
+        Linhas associadas às últimas coletas & 2.362.001 \\
+        Identidades consolidadas & 2.355.195 \\
+        Cotações excluídas por mapeamento insuficiente & 83.092 \\
+        Cotações gravadas no banco derivado & 2.272.103 \\
+        Identidades com múltiplas versões & 5.813 \\
+        Apresentações catalogadas & 1.931 \\
+        Cotações com preço comum válido & 2.068.289 \\
+        Cotações com preço comum por kg & 1.814.153 \\
+        Cotações na camada analítica principal & 2.067.591 \\
+        \textit{Outliers} desconsiderados da camada principal & 698 \\
         Regras de conversão inferida aplicadas & 13 \\
         Cotações com conversão inferida & 3.250 \\
         \bottomrule
@@ -269,12 +271,13 @@ principais indicadores observados nessa execução.
 
     \par\smallskip
     \footnotesize
-    Fonte: resumo da execução mais recente do pré-processamento.
+    Fonte: resumo do banco pré-processado ligado aos resultados documentados.
 \end{table}
 
-Essas quantidades descrevem a execução concluída para a base atual. Uma nova
-execução somente produzirá números diferentes se a base de origem ou os
-critérios configuráveis forem alterados.
+Essas quantidades descrevem o retrato ligado aos bancos de Granger e Efeito
+Dominó consultados. Como o crawler pode continuar acrescentando cotações, uma
+nova execução pode produzir números diferentes mesmo sem alteração dos
+critérios.
 
 % ==========================================
 % 5. METODOLOGIA
@@ -334,19 +337,78 @@ temporário e somente substitui a versão anterior após a conclusão das
 validações. Assim, uma falha durante o processamento não sobrescreve uma saída
 válida nem altera a fonte original.
 
+Essa garantia é aplicada separadamente a cada etapa. O pipeline executa
+pré-processamento, Granger e Efeito Dominó em sequência, mas não confirma os
+três bancos em uma transação única. Se uma etapa posterior falhar, uma saída
+anterior já concluída pode ter sido atualizada, enquanto os bancos antigos das
+etapas seguintes permanecem preservados. A compatibilidade da cadeia é
+verificada pelos hashes, identificadores de execução e parâmetros registrados
+em cada artefato.
+
+\subsection{Política de retenção dos dados do crawler}
+
+O banco derivado não é uma cópia integral do banco do crawler. A seleção dos
+campos separa atributos da observação, informações necessárias para auditoria e
+estado operacional do coletor. As tabelas \texttt{backfill\_states} e
+\texttt{schema\_migrations} e campos como cursor, erro, caminho e hash do
+arquivo bruto e chaves internas de ocorrência permanecem somente no banco de
+origem. Eles descrevem o funcionamento da coleta, e não o preço, o produto, o
+mercado, a data ou a apresentação observada. Repeti-los na tabela analítica
+aumentaria a redundância e poderia confundi-los com variáveis econômicas.
+
+Por outro lado, são preservados o identificador e as datas da coleta, os
+identificadores e nomes das dimensões, os textos originais do produto e da
+apresentação e os campos do complemento PROHORT. Esses dados permitem localizar
+a proveniência, interpretar a unidade original e distinguir informações diretas
+daquelas incorporadas pelo complemento. Portanto, os metadados operacionais
+não foram apagados: apenas permanecem na fonte, que continua sendo a camada de
+auditoria integral.
+
+A tabela \texttt{cotacao\_proveniencias} também não é copiada linha a linha.
+Como uma cotação pode estar ligada a mais de uma coleta, uma junção direta
+multiplicaria observações. Ela é usada para selecionar a coleta mais recente e
+para confirmar a proveniência, sem transformar registros de rastreamento em
+novas cotações.
+
+\subsection{Tipos de decisão sobre um registro}
+
+Neste trabalho, exclusão e filtro não são sinônimos. Foram adotadas quatro
+formas de tratamento:
+
+\begin{itemize}
+    \item \textbf{preservação}: o valor original ou sua proveniência permanece
+    disponível;
+    \item \textbf{consolidação}: várias versões da mesma identidade passam a
+    representar uma única observação;
+    \item \textbf{exclusão da tabela final}: a linha não entra em
+    \texttt{cotacoes\_preprocessadas}, mas permanece no banco bruto e em
+    \texttt{cotacoes\_excluidas\_mapeamento};
+    \item \textbf{desconsideração analítica}: a linha continua no banco
+    derivado, porém não participa de uma visão ou teste cujos requisitos não
+    atende.
+\end{itemize}
+
+Essa taxonomia evita interpretar ``não usado em Granger'' como ``apagado do
+banco''.
+
 \subsection{Seleção e consolidação das cotações}
 
-A identidade lógica de uma cotação representa a combinação de mercado,
-produto, apresentação e data, sem utilizar o preço como parte de sua definição.
-Uma mesma identidade pode aparecer em diferentes coletas ou possuir versões
-simultâneas com preços distintos.
+A identidade lógica é representada por \texttt{chave\_identidade}, fornecida
+pelo banco do crawler. O projeto de mineração trata essa chave como contrato de
+entrada e não a recalcula. Uma mesma identidade pode aparecer em diferentes
+coletas ou possuir versões simultâneas com preços distintos.
 
 Para cada identidade, o processo seleciona a coleta mais recente registrada na
-tabela de proveniências. Quando a coleta escolhida contém mais de uma
-versão, os preços mínimo, comum e máximo são consolidados separadamente pela
-mediana. Essa regra evita escolher arbitrariamente uma das versões e reduz a
-influência de um valor isolado. O banco derivado mantém apenas uma linha por
-identidade e registra a quantidade de versões e a existência de conflito.
+tabela de proveniências. A ordenação usa a data de download, a data de
+processamento e, como desempate, o maior identificador da coleta. Quando a
+linha não está associada à coleta escolhida para sua identidade, ela permanece
+somente no histórico do banco bruto e não segue para a consolidação. Quando a
+coleta escolhida contém mais de uma versão, os preços mínimo, comum e máximo
+são consolidados separadamente pela mediana. A situação de mercado somente é
+mantida quando as versões concordam; em caso de conflito, fica nula. Essa regra
+evita escolher arbitrariamente uma versão e reduz a influência de um valor
+isolado. O banco derivado mantém uma linha por identidade e registra a
+quantidade de versões e a existência de conflito.
 
 \subsection{Normalização dos produtos}
 
@@ -355,6 +417,13 @@ acentuação, espaços ou pontuação. A descrição original e o identificador 
 produto continuam preservados. A normalização permite reconhecer grafias
 equivalentes, mas não junta automaticamente variedades ou classificações que
 possam apresentar comportamentos de preço diferentes.
+
+A regra remove espaços nas extremidades, ignora caixa, decompõe caracteres
+Unicode, retira acentos, substitui sequências não alfanuméricas por espaços e
+reduz espaços repetidos. O nome normalizado do banco tem prioridade; o alias
+original é usado apenas quando a primeira opção está vazia. Termos de variedade
+não são removidos, de forma que, por exemplo, pimentão e pimentão verde
+permanecem chaves distintas.
 
 Descrições sem conteúdo utilizável, como \texttt{*}, recebem o marcador
 \texttt{produto\_invalido}. Esses registros permanecem identificáveis no banco,
@@ -373,6 +442,12 @@ total é calculado pela multiplicação desses valores e a conversão é
 \texttt{calculada}. Unidades como dúzia e cento são convertidas para 12 e 100
 itens, respectivamente, mas não recebem peso em quilogramas sem evidência do
 peso individual.
+
+Volumes são preservados em litros, mas não convertidos para quilogramas porque
+a fonte não informa a densidade. Unidades nativas também são mantidas em sua
+própria base. O critério geral é somente criar R\$/kg quando o denominador pode
+ser obtido de forma determinística ou por uma regra inferida que atenda a todos
+os controles descritos a seguir.
 
 Intervalos como \texttt{CX 25--28 KG} preservam os limites mínimo e máximo. Um
 valor central não é criado, pois isso introduziria uma precisão inexistente na
@@ -393,17 +468,21 @@ unidades ou vasos mesmo quando não existe unidade estruturada na fonte.
 \subsection{Conversões inferidas}
 
 Apresentações sem peso explícito podem ser comparadas com apresentações que
-possuem peso declarado para a mesma chave textual de produto, forma de
-apresentação e origem dos dados. Uma regra somente atende aos critérios
-estruturais quando candidato e âncora possuem ao menos cinco registros e três
-datas, e quando todos os pesos explícitos observados concordam.
+possuem peso declarado para a mesma chave textual de produto, assinatura da
+apresentação e origem dos dados. A assinatura normaliza o texto e remove apenas
+termos de massa. Uma regra somente atende aos critérios estruturais quando
+candidato e âncora possuem ao menos cinco identidades e três datas, quando
+todos os pesos explícitos observados concordam e quando a data limite do treino
+foi informada.
 
 Os preços não são utilizados para escolher o peso inferido. Essa decisão evita
 aproximar artificialmente os preços entre CEASAs e produzir o padrão de
 propagação que a pesquisa pretende investigar. Para impedir que informações
 futuras participem da criação das regras, a data limite de inferência foi
 fixada em 31 de outubro de 2025, a mesma data de corte do conjunto de treino.
-Na execução atual, 13 regras foram aplicadas a 3.250 cotações; outras 11 regras
+Somente registros com entreposto definido e preço comum positivo contam como
+suporte, mas o valor desse preço não participa da escolha do peso.
+Na execução documentada, 13 regras foram aplicadas a 3.250 cotações; outras 11 regras
 permaneceram apenas como candidatas por não atenderem a todos os critérios
 definidos.
 
@@ -415,6 +494,17 @@ gravadas na tabela final. As quantidades excluídas por cada motivo são
 registradas em \texttt{resumo\_preprocessamento}. As próprias linhas ficam
 disponíveis em \texttt{cotacoes\_excluidas\_mapeamento}, além de continuarem
 preservadas no banco bruto.
+
+Na execução documentada, as 83.092 exclusões foram compostas por 83.082
+registros sem unidade, nove sem quantidade exata e um ambíguo. Essa
+distribuição é registrada para permitir que uma futura ampliação do parser
+seja avaliada pelo tipo de informação que ainda falta.
+
+Apresentações ausentes, intervalos, volumes e unidades nativas não são
+automaticamente excluídos. Elas permanecem na tabela final com marcadores e
+somente ficam fora de análises que exigem uma massa total exata. Essa decisão
+preserva dados que ainda podem ser úteis em comparações na unidade original e
+evita tratar toda indisponibilidade de R\$/kg como erro de coleta.
 
 Preços comuns nulos, iguais a zero ou negativos são marcados como inválidos e
 ficam fora de \texttt{cotacoes\_analiticas}. Quando a relação
@@ -432,10 +522,57 @@ grupos com pelo menos cinco ocorrências suspeitas recebem
 \texttt{inconsistencia\_recorrente}; os restantes são classificados como
 \texttt{extremo\_isolado}.
 
+Entre os 698 casos sinalizados na execução documentada, 169 foram classificados
+como erro provável, 438 como inconsistência recorrente e 91 como extremo
+isolado.
+
 Os valores sinalizados não são apagados nem corrigidos. Eles permanecem na
 tabela principal e nas visões de auditoria, mas ficam fora de
 \texttt{cotacoes\_analiticas\_principais}. Assim, não existe uma etapa de
 revisão manual obrigatória para que a base seja utilizada.
+
+A etapa de Granger desconsidera todas as três classes de suspeita, e não apenas
+\texttt{erro\_provavel}. O motivo é que não houve revisão externa capaz de
+separar um extremo econômico real de uma falha de denominador. A cotação
+continua disponível para que essa decisão possa ser revista futuramente.
+
+A Tabela~\ref{tab:destino-registros} resume a diferença entre exclusão e
+desconsideração analítica.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Destino dos registros conforme a regra de qualidade.}
+    \label{tab:destino-registros}
+    \scriptsize
+    \begin{tabular}{p{3.2cm}p{4.0cm}p{6.2cm}}
+        \toprule
+        \textbf{Condição} & \textbf{Destino} & \textbf{Critério e motivo} \\
+        \midrule
+        Sem unidade, sem quantidade exata ou ambígua &
+        Banco bruto e tabela de exclusões &
+        Não existe denominador identificável com segurança; a linha não entra
+        na tabela final, mas permanece auditável. \\
+        \addlinespace
+        Sem apresentação, intervalo, volume ou unidade nativa &
+        Tabela final com marcador &
+        O dado pode ser útil em sua unidade original; somente fica fora de
+        análises que exigem massa total exata. \\
+        \addlinespace
+        Produto, preço comum ou dimensão inválida &
+        Tabela final, fora da visão analítica &
+        Falta uma dimensão essencial para interpretar a observação. \\
+        \addlinespace
+        \textit{Outlier} suspeito &
+        Tabela final e visão de auditoria &
+        O valor não é corrigido, mas não participa de Granger sem revisão
+        externa. \\
+        \addlinespace
+        Conversão incerta &
+        Tabela final, fora de Granger &
+        A comparação entre mercados exige preço em uma unidade comum. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
 
 \subsection{Estrutura e validação da saída}
 
@@ -449,14 +586,17 @@ Ao final, são verificadas a integridade interna do SQLite, a unicidade das
 identidades, a consistência dos marcadores, a cobertura do catálogo e a
 igualdade entre as quantidades consolidadas, gravadas e excluídas. A validação
 também confere a cobertura auditável das exclusões e garante que nenhum
-\textit{outlier} permaneça na camada analítica principal. Com a execução
-validada, o pré-processamento da base atual está concluído.
+\textit{outlier} permaneça na camada analítica principal. Essas verificações
+foram concluídas para o artefato de pré-processamento ligado aos resultados
+apresentados.
 
 % ==========================================
 % 6. SÉRIES TEMPORAIS
 % ==========================================
 
 \section{Construção das séries temporais}
+
+\subsection{Recorte e critérios de entrada}
 
 O recorte atual considera 12 produtos e sete entrepostos: Recife, Grande
 Vitória, Curitiba, Maringá, Cascavel, Foz do Iguaçu e Londrina. Foram utilizadas
@@ -465,6 +605,29 @@ preço comum válido em R\$/kg, não estejam sinalizadas como \textit{outlier} e
 tenham conversão exata, calculada, padronizada ou inferida com alta confiança.
 O período até 31 de outubro de 2025 foi destinado à construção e ao diagnóstico
 das séries; o intervalo posterior foi preservado para avaliações futuras.
+
+Antes dessa seleção, o programa exige que o banco pré-processado tenha uma
+execução concluída e que o limite temporal usado para inferir pesos seja igual
+ao fim do treino. Quando a origem bruta ainda está disponível, ela também não
+pode ser mais recente que o banco derivado. A etapa é interrompida se um dos
+sete mercados estiver ausente ou associado a mais de uma CEASA ou UF. Essas
+regras impedem a combinação de dados novos com conversões antigas, o uso de
+informação futura e a junção de mercados ambíguos.
+
+Os sete entrepostos foram definidos na exploração anterior aos testes porque
+apresentavam mais de mil datas, cobertura multi-anual atual e sobreposição a
+partir de janeiro de 2022. Os outros 15 entrepostos do banco não foram removidos
+da base derivada: ficaram fora deste recorte por terem menos de mil datas,
+série encerrada antes do período ou coleta recente e curta.
+
+Os 12 produtos formam uma cesta de interesse fixada na exploração inicial:
+batata, tomate, cebola, cenoura, morango, beterraba, melão, pimentão verde,
+pimentão, batata-doce, banana-prata e quiabo. A lista não foi determinada pelos
+p-valores e não corresponde a um ranking automático. A cobertura efetiva de
+cada combinação produto--mercados é verificada posteriormente, o que evita que
+a seleção substantiva substitua o critério amostral.
+
+\subsection{Agregação, preenchimento e retornos}
 
 Quando existe mais de uma cotação para o mesmo produto, entreposto e data,
 utiliza-se a mediana diária do preço comum em R\$/kg. Fins de semana são
@@ -481,8 +644,18 @@ preços são transformados em retornos logarítmicos diários:
 direciona a análise às variações relativas, reduzindo o efeito dos diferentes
 níveis de preço entre mercados.
 
-Na execução atual, o recorte carregou 175.160 cotações, desconsiderou 320
-registros de fim de semana e produziu 63.163 pontos diários observados e 8.545
+São materializadas as 84 combinações entre 12 produtos e sete mercados,
+inclusive as combinações sem dados. Cada ponto recebe um marcador que distingue
+cotação realmente observada de valor preenchido. Depois do terceiro dia útil
+sem observação, inicia-se uma lacuna e a sequência seguinte recebe outro
+segmento. O retorno somente é calculado entre preços disponíveis no mesmo
+segmento; portanto, uma lacuna não pode produzir um retorno ou uma defasagem
+artificial. Os valores preenchidos auxiliam o alinhamento dos calendários, mas
+não contam para admitir um par nem podem iniciar ou confirmar um evento de
+Efeito Dominó.
+
+Na execução documentada, o recorte carregou 174.687 cotações, desconsiderou 320
+registros de fim de semana e produziu 63.011 pontos diários observados e 8.529
 pontos preenchidos. Nenhuma cotação inferida entrou nesse recorte específico.
 
 % ==========================================
@@ -491,12 +664,35 @@ pontos preenchidos. Nenhuma cotação inferida entrou nesse recorte específico.
 
 \section{Teste de causalidade de Granger}
 
+\subsection{Formação e qualificação dos pares}
+
 Para cada produto, foram formados todos os pares possíveis entre os sete
 entrepostos, totalizando 252 pares candidatos. Um par somente é elegível quando
 as duas séries possuem ao menos 400 dias úteis observados em comum no período
-de treino. Os retornos de cada série são avaliados pelos testes ADF e KPSS; o
-par segue para Granger apenas quando as duas séries atendem simultaneamente aos
-critérios de estacionariedade.
+de treino. Pontos preenchidos não contam para esse limite. Pares sem observação
+recebem \texttt{serie\_ausente}; os demais pares abaixo do limite recebem
+\texttt{dias\_observados\_insuficientes}. Todos permanecem registrados com o
+motivo. O limite corresponde a aproximadamente um ano e meio de dias úteis e
+evita estimar regressões com uma sobreposição curta. Além dos dias observados,
+registra-se a sobreposição disponível com
+preenchimento, mas ela não decide a elegibilidade. Nos pares aprovados, os
+retornos são recalculados em segmentos comuns, que são interrompidos por uma
+lacuna em qualquer uma das séries. Os retornos são então avaliados pelos testes
+ADF e KPSS; o par segue para Granger apenas quando as duas séries atendem
+simultaneamente aos critérios de estacionariedade.
+
+\subsection{Diagnóstico de estacionariedade}
+
+Os diagnósticos usam o maior segmento contínuo do par. Cada série deve conter
+ao menos 30 retornos, não ser constante, apresentar ADF com $p<0{,}05$ e KPSS
+com $p>0{,}05$. Exigir concordância dos dois testes reduz a dependência de uma
+única hipótese nula. O ADF usa constante e escolhe internamente suas defasagens
+pelo BIC; o KPSS usa constante e seleção automática de defasagens. Amostra
+insuficiente, série constante ou erro numérico reprova o par e mantém o motivo
+no banco. As duas direções recebem \texttt{nao\_estacionario} e não participam
+da correção de múltiplos testes.
+
+\subsection{Especificação, seleção de lags e significância}
 
 As duas direções de cada par são testadas separadamente. São avaliadas de uma a
 dez defasagens em uma amostra fixa, e a quantidade de defasagens é escolhida
@@ -506,14 +702,58 @@ destino. Como várias hipóteses são avaliadas, os valores $p$ recebem correç�
 global de Benjamini--Hochberg, com taxa de falsas descobertas de 5\%
 \cite{benjamini1995}.
 
+Para uma direção $A \rightarrow B$ e um lag $p$, o modelo restrito contém
+apenas o passado do destino:
+
+\begin{equation}
+    r^{B}_{t} = c + \sum_{i=1}^{p}\phi_i r^{B}_{t-i} + \varepsilon_t,
+\end{equation}
+
+\noindent enquanto o modelo irrestrito acrescenta o passado da origem:
+
+\begin{equation}
+    r^{B}_{t} = c + \sum_{i=1}^{p}\phi_i r^{B}_{t-i}
+    + \sum_{i=1}^{p}\beta_i r^{A}_{t-i} + \varepsilon_t.
+\end{equation}
+
+O teste F compara esses modelos. Matriz sem posto completo, amostra insuficiente
+ou resíduo nulo produz \texttt{erro\_modelo}, e não um valor $p$ artificial.
+
+A amostra de todos os lags começa depois da décima defasagem, mesmo quando o
+modelo avaliado usa menos lags. Isso impede que o BIC favoreça um modelo apenas
+por ter recebido mais observações. Segmentos separados por lacunas não são
+concatenados e, em caso de empate no BIC, escolhe-se o menor lag. Todos os dez
+resultados são preservados, mas somente o valor $p$ do lag escolhido em cada
+direção com status \texttt{testado} participa da correção global. A aprovação
+principal exige $q<0{,}05$; significância apenas no valor $p$ bruto não envia a
+relação para o Efeito Dominó.
+
 Um resultado significativo é interpretado como evidência de influência
 temporal preditiva no sentido de Granger. Ele não prova, sozinho, que um
 entreposto provoque diretamente a alteração de preço no outro, pois fatores
 externos ou variáveis não observadas também podem explicar a relação.
 
+\subsection{Validação e rastreabilidade}
+
+O banco de Granger registra o caminho, o tamanho e o hash SHA-256 do banco
+pré-processado, o identificador da execução de origem e todos os parâmetros do
+recorte. Também preserva as séries, os pares rejeitados e seus motivos, os
+diagnósticos de estacionariedade, os resultados de todos os lags e os
+coeficientes do modelo escolhido.
+
+Antes da substituição do arquivo anterior, são verificadas a integridade do
+SQLite e suas chaves estrangeiras, a aplicação do limite mínimo de cobertura,
+a presença das duas direções para cada par elegível, os dez resultados de lag
+para cada direção testada, a seleção de um lag entre 1 e 10 e a permanência dos
+valores $q$ no intervalo de zero a um. Essas verificações confirmam a coerência
+interna do artefato, mas não transformam associação temporal em causalidade
+econômica.
+
 \section{Resultados atuais}
 
-A Tabela~\ref{tab:granger-resultados} resume a execução atual. Dos 252 pares
+\subsection{Síntese quantitativa}
+
+A Tabela~\ref{tab:granger-resultados} resume a execução documentada. Dos 252 pares
 candidatos, 134 atenderam ao mínimo de sobreposição e todos passaram pelos
 diagnósticos de estacionariedade. Isso produziu 268 direções testadas, das
 quais 80 seriam significativas sem ajuste e 62 permaneceram significativas
@@ -528,8 +768,10 @@ após a correção global.
         \toprule
         \textbf{Indicador} & \textbf{Quantidade} \\
         \midrule
-        Cotações carregadas no recorte & 175.160 \\
+        Cotações carregadas no recorte & 174.687 \\
         Pares candidatos & 252 \\
+        Pares com série ausente & 53 \\
+        Pares com cobertura observada insuficiente & 65 \\
         Pares elegíveis e estacionários & 134 \\
         Direções testadas & 268 \\
         Direções significativas sem correção & 80 \\
@@ -542,8 +784,10 @@ após a correção global.
 
     \par\smallskip
     \footnotesize
-    Fonte: banco \path{resultados/granger/granger.sqlite} da execução atual.
+    Fonte: banco \path{resultados/granger/granger.sqlite} da execução documentada.
 \end{table}
+
+\subsection{Interpretação e limitações}
 
 Os resultados mostram, no recorte analisado, evidências de influência temporal
 entre determinados entrepostos. Tomate, batata e morango concentraram,
@@ -563,6 +807,8 @@ para localizar ocorrências de Efeito Dominó antes da futura modelagem.
 
 \section{Caracterização do Efeito Dominó}
 
+\subsection{Relações analisadas e definição de choque}
+
 O resultado de Granger é utilizado como um mapa das relações que devem ser
 observadas, e não como um modelo de previsão. Para cada produto, somente as
 direções que permaneceram significativas após a correção FDR são examinadas.
@@ -577,6 +823,20 @@ teste influenciem a regra. Tanto o movimento inicial quanto a resposta são
 determinados por cotações realmente observadas; valores preenchidos para
 cobrir falhas curtas não podem iniciar nem confirmar um evento.
 
+Como os retornos são logarítmicos, o piso de 5\% é representado por
+$\ln(1+0{,}05)$. Para cada produto e mercado, o limite usado é
+
+\begin{equation}
+    L = \max\left\{\ln(1+0{,}05),\;Q_{0{,}90}(r_{\mathrm{treino,obs}})\right\}.
+\end{equation}
+
+O limite é próprio de cada produto e mercado, em vez de um valor único para
+toda a base, porque a distribuição das variações difere entre séries. O piso de
+5\% evita classificar como choque uma variação pequena em uma série estável; o
+percentil 90 adapta a exigência quando a volatilidade histórica é maior.
+
+\subsection{Classificação dos eventos}
+
 Para uma relação direcionada $A \rightarrow B$, a caracterização segue os
 passos abaixo:
 
@@ -586,16 +846,49 @@ passos abaixo:
     \item confirmar que existe uma cotação observada em $B$ na mesma data;
     \item desconsiderar como propagação os casos em que $A$ e $B$ já apresentam
     uma alta forte simultaneamente;
-    \item observar as cotações de $B$ nos cinco dias úteis seguintes;
+    \item observar as cotações de $B$ nos cinco dias úteis seguintes, sem
+    atravessar a divisão entre treino e teste;
     \item registrar Efeito Dominó quando a alta acumulada em $B$ atingir o
-    limite calculado para sua própria série.
+    limite calculado para sua própria série, usando como base o preço observado
+    em $B$ na data inicial.
 \end{enumerate}
 
-Quando existe cobertura no destino, mas a resposta não ocorre dentro da
-janela, o caso é marcado como não propagado. Casos sem cotação inicial no
-destino, sem cobertura posterior ou com movimento simultâneo são preservados
-para auditoria, mas não recebem rótulo positivo ou negativo. Essa distinção
-evita transformar ausência de dados em ausência de propagação.
+Quando existe ao menos uma cotação futura observada no destino, mas a resposta
+não ocorre dentro da janela, o caso é marcado como não propagado. Casos sem
+cotação inicial no destino, sem nenhuma observação posterior ou com movimento
+simultâneo são preservados para auditoria, mas não recebem rótulo positivo ou
+negativo. Essa distinção evita transformar ausência de dados em ausência de
+propagação. A resposta registrada é a primeira data observada em que a alta
+acumulada atinge o limite, e não necessariamente a data da maior alta na
+janela.
+
+A Tabela~\ref{tab:regra-domino} explicita a decisão atribuída a cada condição.
+A janela pode conter menos de cinco cotações: uma única observação futura já
+permite o rótulo negativo se o limite não for atingido; somente a ausência
+total de observações futuras representa falta de cobertura.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Regras de classificação dos candidatos ao Efeito Dominó.}
+    \label{tab:regra-domino}
+    \scriptsize
+    \begin{tabular}{p{4.0cm}p{2.2cm}p{7.0cm}}
+        \toprule
+        \textbf{Condição} & \textbf{Rótulo} & \textbf{Decisão} \\
+        \midrule
+        Cotação futura observada atinge o limite & 1 &
+        \texttt{confirmado}; registra a primeira resposta. \\
+        Cotação futura existe, mas não atinge o limite & 0 &
+        \texttt{nao\_confirmado}; houve cobertura para testar a regra. \\
+        Destino também supera seu limite na data inicial & Nulo &
+        \texttt{movimento\_simultaneo}; não há propagação posterior. \\
+        Destino sem base observada ou com preço-base inválido & Nulo &
+        Não existe referência comparável para calcular a alta acumulada. \\
+        Nenhuma cotação futura observada na janela & Nulo &
+        \texttt{sem\_cobertura\_destino}; falta de dado não equivale a ausência de efeito. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
 
 A unidade resultante representa um produto, uma origem, um destino e a data
 da alta inicial. Assim, a nova base indicará explicitamente os casos em que a
@@ -604,14 +897,24 @@ a ideia de um evento inicial que produz uma consequência posterior em outra
 unidade, presente na literatura de efeito dominó \cite{swuste2019}, aplicada
 aqui à transmissão temporal de preços.
 
+\subsection{Rastreabilidade, resultados e limitações}
+
 A caracterização foi gravada em
 \path{resultados/efeitos/domino/efeito_domino.sqlite}, sem modificar os bancos
 anteriores. A execução pode ser feita isoladamente ou pelo pipeline completo,
 que executa pré-processamento, Granger e caracterização em sequência.
 
-A Tabela~\ref{tab:efeito-domino-resultados} resume a execução atual. Entre os
-4.815 eventos classificáveis, 1.881 foram confirmados, correspondendo a 39,1\%.
-A proporção foi semelhante no treino e no teste, com 39,0\% e 39,2\%,
+O banco registra o caminho e o hash SHA-256 do banco de Granger, o identificador
+da execução de origem, as relações recebidas e os parâmetros usados. Antes de
+substituir a saída anterior, o processo verifica a integridade do SQLite, a
+correspondência entre o resumo e as quantidades de choques, eventos
+classificáveis, confirmações e não confirmações, além de exigir que todo rótulo
+1 tenha status \texttt{confirmado} e todo rótulo 0 tenha status
+\texttt{nao\_confirmado}.
+
+A Tabela~\ref{tab:efeito-domino-resultados} resume a execução documentada.
+Entre os 4.807 eventos classificáveis, 1.881 foram confirmados, correspondendo
+a 39,1\%. A proporção foi semelhante no treino e no teste, com 39,0\% e 39,5\%,
 respectivamente.
 
 \begin{table}[htbp]
@@ -624,20 +927,20 @@ respectivamente.
         \textbf{Indicador} & \textbf{Quantidade} \\
         \midrule
         Relações de Granger analisadas & 62 \\
-        Choques encontrados na origem & 6.149 \\
-        Eventos classificáveis & 4.815 \\
+        Choques encontrados na origem & 6.138 \\
+        Eventos classificáveis & 4.807 \\
         Efeitos confirmados & 1.881 \\
-        Efeitos não confirmados & 2.934 \\
+        Efeitos não confirmados & 2.926 \\
         Movimentos simultâneos & 841 \\
-        Eventos sem base observada no destino & 470 \\
-        Eventos sem cobertura posterior & 23 \\
+        Eventos sem base observada no destino & 469 \\
+        Eventos sem cobertura posterior & 21 \\
         \bottomrule
     \end{tabular}
 
     \par\smallskip
     \footnotesize
     Fonte: banco
-    \path{resultados/efeitos/domino/efeito_domino.sqlite} da execução atual.
+    \path{resultados/efeitos/domino/efeito_domino.sqlite} da execução documentada.
 \end{table}
 
 Todas as 62 relações apresentaram ao menos um evento classificável e uma
@@ -649,6 +952,7 @@ totalizando 647 registros adicionais. Antes do treinamento, será necessário
 definir como agrupar essas sobreposições e comparar a taxa observada com um
 controle formado por relações não significativas ou datas embaralhadas.
 
+\clearpage
 \printbibliography[heading=bibintoc,title={Referências}]
 
 \end{document}
