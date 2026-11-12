@@ -26,6 +26,22 @@ docker compose run --build --rm preprocessamento
 Consulte a [documentação do pré-processamento](preprocessamento/preprocessamento.md)
 para conhecer as transformações e decisões adotadas.
 
+## Séries temporais e teste de Granger
+
+A etapa de Granger será executada por um script Python normal, sem depender de
+notebooks. O serviço correspondente já possui uma entrada própria no Docker
+Compose:
+
+```bash
+docker compose run --build --rm granger
+```
+
+O serviço utilizará `data/cotacoes_preprocessadas.sqlite` e gerará
+`data/granger.sqlite`, preservando as séries, diagnósticos e todos os testes
+realizados. Consulte a
+[documentação da etapa de Granger](granger/granger.md) para acompanhar as
+decisões metodológicas e as estruturas geradas.
+
 ## Ambiente Python com Docker
 
 Construa a imagem e inicie o JupyterLab:

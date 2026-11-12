@@ -24,6 +24,7 @@ import tempfile
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
@@ -60,6 +61,8 @@ DEFAULT_OUTLIER_PROBABLE_HIGH = 20.0
 DEFAULT_OUTLIER_RECURRENT_MIN = 5
 DEFAULT_INFERENCE_MIN_SUPPORT = 5
 DEFAULT_INFERENCE_MIN_DATES = 3
+DEFAULT_CHUNK_SIZE = 100_000
+SQLITE_WRITE_BATCH_SIZE = 10_000
 EXCLUDED_MAPPING_STATUSES = frozenset(
     {"ambigua", "sem_quantidade_exata", "sem_unidade"}
 )
@@ -429,6 +432,13 @@ def abrir_origem(path: Path) -> sqlite3.Connection:
     if not path.is_file():
         raise FileNotFoundError(f"Banco de origem não encontrado: {path}")
     return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+
+
+def registrar_tempo_etapa(nome: str, inicio: float) -> float:
+    """Exibe a duração de uma etapa e inicia a medição da próxima."""
+    duracao = perf_counter() - inicio
+    print(f"Etapa '{nome}' concluída em {duracao:.2f} s.", flush=True)
+    return perf_counter()
 
 
 def preparar_origem(path: Path) -> tuple[Path, Path | None]:
@@ -994,7 +1004,7 @@ def inserir_catalogo_apresentacoes(
         connection,
         if_exists="append",
         index=False,
-        chunksize=1_000,
+        chunksize=SQLITE_WRITE_BATCH_SIZE,
     )
 
 
@@ -1070,19 +1080,10 @@ END
 """.strip()
 
 
-def construir_regras_inferencia(
+def construir_chaves_produtos(
     source: sqlite3.Connection,
-    catalog: pd.DataFrame,
-    args: argparse.Namespace,
 ) -> pd.DataFrame:
-    """Descobre regras por produto e apresentação usando somente o treino."""
-    limite_informado = args.data_limite_inferencia
-    limite_analise = limite_informado or source.execute(
-        "SELECT MAX(data_cotacao) FROM cotacoes"
-    ).fetchone()[0]
-    if limite_analise is None:
-        return pd.DataFrame(columns=INFERENCE_RULE_COLUMNS)
-
+    """Normaliza cada alias de produto uma única vez por execução."""
     product_aliases = pd.read_sql_query(
         """
         SELECT
@@ -1103,6 +1104,22 @@ def construir_regras_inferencia(
     ] = product_aliases.loc[missing_product_key, "produto_original"].map(
         normalizar_texto
     )
+    return product_aliases
+
+
+def construir_regras_inferencia(
+    source: sqlite3.Connection,
+    catalog: pd.DataFrame,
+    product_aliases: pd.DataFrame,
+    args: argparse.Namespace,
+) -> pd.DataFrame:
+    """Descobre regras por produto e apresentação usando somente o treino."""
+    limite_informado = args.data_limite_inferencia
+    limite_analise = limite_informado or source.execute(
+        "SELECT MAX(data_cotacao) FROM cotacoes"
+    ).fetchone()[0]
+    if limite_analise is None:
+        return pd.DataFrame(columns=INFERENCE_RULE_COLUMNS)
 
     source.execute("DROP TABLE IF EXISTS temp.produtos_inferencia")
     source.execute(
@@ -1310,7 +1327,7 @@ def inserir_regras_inferencia(
         connection,
         if_exists="append",
         index=False,
-        chunksize=1_000,
+        chunksize=SQLITE_WRITE_BATCH_SIZE,
     )
 
 
@@ -1432,7 +1449,8 @@ ORDER BY c.chave_identidade, c.id
 def processar_chunk(
     chunk: pd.DataFrame,
     catalog: pd.DataFrame,
-    inference_rules: pd.DataFrame,
+    product_keys: dict[object, object],
+    active_rules: pd.DataFrame,
 ) -> pd.DataFrame:
     numeric_prices = (
         "preco_minimo_original",
@@ -1442,9 +1460,11 @@ def processar_chunk(
     for column in numeric_prices:
         chunk[column] = pd.to_numeric(chunk[column], errors="coerce")
 
-    chunk["produto_chave_textual"] = chunk["produto_normalizado_banco"].map(
-        normalizar_texto
-    )
+    chunk["produto_chave_textual"] = chunk["produto_alias_id"].map(product_keys)
+    missing_key = chunk["produto_chave_textual"].isna()
+    chunk.loc[missing_key, "produto_chave_textual"] = chunk.loc[
+        missing_key, "produto_normalizado_banco"
+    ].map(normalizar_texto)
     missing_key = chunk["produto_chave_textual"].isna()
     chunk.loc[missing_key, "produto_chave_textual"] = chunk.loc[
         missing_key, "produto_original"
@@ -1505,25 +1525,11 @@ def processar_chunk(
     chunk["nivel_confianca"] = chunk["nivel_confianca"].fillna("pendente")
     chunk["origem_regra"] = chunk["origem_regra"].fillna("sem_regra")
 
-    active_rules = inference_rules.loc[
-        inference_rules["status_regra"].eq("aplicada")
-    ]
     if active_rules.empty:
         chunk["regra_inferencia_id"] = pd.NA
     else:
-        rule_columns = [
-            "id",
-            "produto_chave_textual",
-            "apresentacao_unidade_id",
-            "origem_dado",
-            "peso_total_kg_inferido",
-            "suporte_ancora",
-            "datas_ancora",
-            "ceasas_ancora",
-            "data_limite_inferencia",
-        ]
         chunk = chunk.merge(
-            active_rules[rule_columns].rename(columns={"id": "regra_inferencia_id"}),
+            active_rules,
             on=[
                 "produto_chave_textual",
                 "apresentacao_unidade_id",
@@ -1545,22 +1551,40 @@ def processar_chunk(
         chunk.loc[inferred, "status_mapeamento"] = "convertida_inferida"
         chunk.loc[inferred, "nivel_confianca"] = "alta"
         chunk.loc[inferred, "origem_regra"] = "inferencia_base_treino"
-        chunk.loc[inferred, "formula_conversao"] = inferred_weight.map(
-            lambda weight: f"peso_total_kg = {weight:g} kg (regra inferida)"
-        )
-        chunk.loc[inferred, "evidencia_mapeamento"] = chunk.loc[
-            inferred, "regra_inferencia_id"
-        ].map(lambda rule_id: f"regra_inferencia_id={int(rule_id)}")
-        chunk.loc[inferred, "observacao_conversao"] = chunk.loc[inferred].apply(
-            lambda row: (
+        inferred_rows = chunk.loc[
+            inferred,
+            [
+                "peso_total_kg_inferido",
+                "regra_inferencia_id",
+                "suporte_ancora",
+                "datas_ancora",
+                "ceasas_ancora",
+                "data_limite_inferencia",
+            ],
+        ]
+        chunk.loc[inferred, "formula_conversao"] = [
+            f"peso_total_kg = {weight:g} kg (regra inferida)"
+            for weight in inferred_rows["peso_total_kg_inferido"]
+        ]
+        chunk.loc[inferred, "evidencia_mapeamento"] = [
+            f"regra_inferencia_id={int(rule_id)}"
+            for rule_id in inferred_rows["regra_inferencia_id"]
+        ]
+        chunk.loc[inferred, "observacao_conversao"] = [
+            (
                 "Regra inferida com "
-                f"{int(row['suporte_ancora'])} âncoras e "
-                f"{int(row['datas_ancora'])} datas em "
-                f"{int(row['ceasas_ancora'])} CEASAs "
-                f"até {row['data_limite_inferencia']}."
-            ),
-            axis=1,
-        )
+                f"{int(support)} âncoras e "
+                f"{int(dates)} datas em "
+                f"{int(ceasas)} CEASAs até {limit}."
+            )
+            for support, dates, ceasas, limit in zip(
+                inferred_rows["suporte_ancora"],
+                inferred_rows["datas_ancora"],
+                inferred_rows["ceasas_ancora"],
+                inferred_rows["data_limite_inferencia"],
+                strict=True,
+            )
+        ]
         chunk = chunk.drop(
             columns=[
                 "peso_total_kg_inferido",
@@ -1664,36 +1688,54 @@ def consolidar_cotacoes_brutas(chunk: pd.DataFrame) -> pd.DataFrame:
         "versoes_identidade"
     ].gt(1).astype(int)
 
-    consolidated_repeated: list[pd.Series] = []
     price_columns = (
         "preco_minimo_original",
         "preco_comum_original",
         "preco_maximo_original",
     )
     repeated_rows = working.loc[repeated]
-    for _, versions in repeated_rows.groupby(
-        "chave_identidade", sort=False, dropna=False
-    ):
-        row = versions.iloc[0].copy()
-        for column in price_columns:
-            values = pd.to_numeric(versions[column], errors="coerce")
-            row[column] = values.median() if values.notna().any() else np.nan
+    consolidated_repeated = repeated_rows.drop_duplicates(
+        "chave_identidade",
+        keep="first",
+    ).copy()
+    for column in price_columns:
+        numeric_values = pd.to_numeric(repeated_rows[column], errors="coerce")
+        medians = numeric_values.groupby(
+            repeated_rows["chave_identidade"],
+            sort=False,
+            dropna=False,
+        ).median()
+        consolidated_repeated[column] = consolidated_repeated[
+            "chave_identidade"
+        ].map(medians)
 
+    market_situations: dict[object, object] = {}
+    for identity, versions in repeated_rows.groupby(
+        "chave_identidade",
+        sort=False,
+        dropna=False,
+    ):
         situations = [
             None if pd.isna(value) else str(value)
             for value in versions["situacao_mercado"]
         ]
-        row["situacao_mercado"] = (
+        market_situations[identity] = (
             situations[0] if len(set(situations)) == 1 else None
         )
-        total_versions = int(versions["versoes_identidade"].iloc[0])
-        row["versoes_identidade"] = total_versions
-        row["houve_conflito_versoes"] = int(total_versions > 1)
-        consolidated_repeated.append(row)
+    consolidated_repeated["situacao_mercado"] = consolidated_repeated[
+        "chave_identidade"
+    ].map(market_situations)
+    consolidated_repeated["versoes_identidade"] = pd.to_numeric(
+        consolidated_repeated["versoes_identidade"],
+        errors="raise",
+    ).astype(int)
+    consolidated_repeated["houve_conflito_versoes"] = consolidated_repeated[
+        "versoes_identidade"
+    ].gt(1).astype(int)
 
     parts = [singletons]
-    if consolidated_repeated:
-        parts.append(pd.DataFrame(consolidated_repeated))
+    if not consolidated_repeated.empty:
+        parts.append(consolidated_repeated)
 
     return (
         pd.concat(parts, ignore_index=True)
@@ -1707,6 +1749,7 @@ def inserir_cotacoes(
     source: sqlite3.Connection,
     target: sqlite3.Connection,
     catalog: pd.DataFrame,
+    product_aliases: pd.DataFrame,
     inference_rules: pd.DataFrame,
     chunk_size: int,
 ) -> dict[str, int]:
@@ -1718,6 +1761,31 @@ def inserir_cotacoes(
     total_ambiguous = 0
     conflicts = 0
     pending = pd.DataFrame()
+    product_keys = dict(
+        product_aliases.loc[
+            product_aliases["produto_chave_textual"].notna(),
+            ["produto_alias_id", "produto_chave_textual"],
+        ].itertuples(index=False, name=None)
+    )
+    rule_columns = [
+        "id",
+        "produto_chave_textual",
+        "apresentacao_unidade_id",
+        "origem_dado",
+        "peso_total_kg_inferido",
+        "suporte_ancora",
+        "datas_ancora",
+        "ceasas_ancora",
+        "data_limite_inferencia",
+    ]
+    active_rules = (
+        inference_rules.loc[
+            inference_rules["status_regra"].eq("aplicada"),
+            rule_columns,
+        ]
+        .rename(columns={"id": "regra_inferencia_id"})
+        .copy()
+    )
 
     def persist(raw: pd.DataFrame) -> None:
         nonlocal total_consolidated
@@ -1729,7 +1797,12 @@ def inserir_cotacoes(
         if raw.empty:
             return
         consolidated = consolidar_cotacoes_brutas(raw)
-        processed = processar_chunk(consolidated, catalog, inference_rules)
+        processed = processar_chunk(
+            consolidated,
+            catalog,
+            product_keys,
+            active_rules,
+        )
         total_consolidated += len(processed)
         mapping_status = processed["status_mapeamento"]
         without_unit = mapping_status.eq("sem_unidade")
@@ -1746,7 +1819,7 @@ def inserir_cotacoes(
                 target,
                 if_exists="append",
                 index=False,
-                chunksize=1_000,
+                chunksize=SQLITE_WRITE_BATCH_SIZE,
             )
         processed = processed.loc[~excluded_mapping].copy()
         total_persisted += len(processed)
@@ -1758,7 +1831,7 @@ def inserir_cotacoes(
             target,
             if_exists="append",
             index=False,
-            chunksize=1_000,
+            chunksize=SQLITE_WRITE_BATCH_SIZE,
         )
 
     for chunk in pd.read_sql_query(SOURCE_QUERY, source, chunksize=chunk_size):
@@ -1883,7 +1956,7 @@ def marcar_outliers(
         connection,
         if_exists="append",
         index=False,
-        chunksize=1_000,
+        chunksize=SQLITE_WRITE_BATCH_SIZE,
     )
     connection.execute(
         """
@@ -2019,108 +2092,124 @@ def criar_indices_e_views(connection: sqlite3.Connection) -> None:
     )
 
 
+def consultar_metricas(
+    connection: sqlite3.Connection,
+    query: str,
+) -> dict[str, int]:
+    cursor = connection.execute(query)
+    row = cursor.fetchone()
+    if row is None:
+        return {}
+    return {
+        description[0]: int(value or 0)
+        for description, value in zip(cursor.description, row, strict=True)
+    }
+
+
 def gerar_resumo(connection: sqlite3.Connection) -> dict[str, int]:
-    queries = {
-        "cotacoes_total": "SELECT COUNT(*) FROM cotacoes_preprocessadas",
-        "preco_comum_valido": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas WHERE preco_comum_valido = 1"
-        ),
-        "produtos_invalidos": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas WHERE produto_valido = 0"
-        ),
-        "ordem_precos_inconsistente": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas "
-            "WHERE ordem_precos_inconsistente = 1"
-        ),
-        "cotacoes_analiticas": "SELECT COUNT(*) FROM cotacoes_analiticas",
-        "cotacoes_analiticas_principais": (
-            "SELECT COUNT(*) FROM cotacoes_analiticas_principais"
-        ),
-        "cotacoes_excluidas_auditaveis": (
-            "SELECT COUNT(*) FROM cotacoes_excluidas_mapeamento"
-        ),
-        "apresentacoes_catalogadas": "SELECT COUNT(*) FROM catalogo_apresentacoes",
-        "apresentacoes_unidade_nativa": (
-            "SELECT COUNT(*) FROM catalogo_apresentacoes "
-            "WHERE status_mapeamento = 'unidade_nativa'"
-        ),
-        "apresentacoes_intervalo": (
-            "SELECT COUNT(*) FROM catalogo_apresentacoes "
-            "WHERE status_mapeamento IN ('intervalo_massa', 'intervalo_quantidade')"
-        ),
-        "conversao_exata": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas WHERE tipo_conversao = 'exata'"
-        ),
-        "conversao_calculada": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas WHERE tipo_conversao = 'calculada'"
-        ),
-        "conversao_padronizada": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas "
-            "WHERE tipo_conversao = 'padronizada'"
-        ),
-        "conversao_inferida_alta_confianca": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas "
-            "WHERE tipo_conversao = 'inferida_alta_confianca'"
-        ),
-        "conversao_incerta": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas WHERE tipo_conversao = 'incerta'"
-        ),
-        "preco_comum_kg_disponivel": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas "
-            "WHERE preco_comum_kg IS NOT NULL"
-        ),
-        "preco_comum_unidade_base_disponivel": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas "
-            "WHERE preco_comum_unidade_base IS NOT NULL"
-        ),
-        "quantidade_itens_disponivel": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas "
-            "WHERE quantidade_itens IS NOT NULL"
-        ),
-        "preco_comum_item_disponivel": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas "
-            "WHERE preco_comum_item IS NOT NULL"
-        ),
-        "origem_prohort": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas WHERE origem_dado = 'prohort'"
-        ),
-        "outliers_suspeitos": "SELECT COUNT(*) FROM outliers_suspeitos",
-        "outliers_erro_provavel": (
-            "SELECT COUNT(*) FROM outliers_suspeitos "
-            "WHERE classificacao = 'erro_provavel'"
-        ),
-        "outliers_inconsistencia_recorrente": (
-            "SELECT COUNT(*) FROM outliers_suspeitos "
-            "WHERE classificacao = 'inconsistencia_recorrente'"
-        ),
-        "outliers_extremo_isolado": (
-            "SELECT COUNT(*) FROM outliers_suspeitos "
-            "WHERE classificacao = 'extremo_isolado'"
-        ),
-        "identidades_multiplas_versoes": (
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas "
-            "WHERE houve_conflito_versoes = 1"
-        ),
-        "versoes_removidas_na_consolidacao": (
-            "SELECT COALESCE(SUM(versoes_identidade - 1), 0) "
-            "FROM cotacoes_preprocessadas"
-        ),
-        "regras_inferencia_total": (
-            "SELECT COUNT(*) FROM regras_conversao_inferida"
-        ),
-        "regras_inferencia_candidatas": (
-            "SELECT COUNT(*) FROM regras_conversao_inferida "
-            "WHERE status_regra = 'candidata'"
-        ),
-        "regras_inferencia_aplicadas": (
-            "SELECT COUNT(*) FROM regras_conversao_inferida "
-            "WHERE status_regra = 'aplicada'"
-        ),
-    }
-    summary = {
-        name: int(connection.execute(query).fetchone()[0])
-        for name, query in queries.items()
-    }
+    summary = consultar_metricas(
+        connection,
+        """
+        SELECT
+            COUNT(*) AS cotacoes_total,
+            SUM(CASE WHEN preco_comum_valido = 1 THEN 1 ELSE 0 END)
+                AS preco_comum_valido,
+            SUM(CASE WHEN produto_valido = 0 THEN 1 ELSE 0 END)
+                AS produtos_invalidos,
+            SUM(CASE WHEN ordem_precos_inconsistente = 1 THEN 1 ELSE 0 END)
+                AS ordem_precos_inconsistente,
+            SUM(CASE
+                WHEN produto_valido = 1
+                 AND preco_comum_valido = 1
+                 AND dimensoes_validas = 1
+                THEN 1 ELSE 0 END) AS cotacoes_analiticas,
+            SUM(CASE
+                WHEN produto_valido = 1
+                 AND preco_comum_valido = 1
+                 AND dimensoes_validas = 1
+                 AND outlier_suspeito = 0
+                THEN 1 ELSE 0 END) AS cotacoes_analiticas_principais,
+            SUM(CASE WHEN tipo_conversao = 'exata' THEN 1 ELSE 0 END)
+                AS conversao_exata,
+            SUM(CASE WHEN tipo_conversao = 'calculada' THEN 1 ELSE 0 END)
+                AS conversao_calculada,
+            SUM(CASE WHEN tipo_conversao = 'padronizada' THEN 1 ELSE 0 END)
+                AS conversao_padronizada,
+            SUM(CASE WHEN tipo_conversao = 'inferida_alta_confianca'
+                THEN 1 ELSE 0 END) AS conversao_inferida_alta_confianca,
+            SUM(CASE WHEN tipo_conversao = 'incerta' THEN 1 ELSE 0 END)
+                AS conversao_incerta,
+            SUM(CASE WHEN preco_comum_kg IS NOT NULL THEN 1 ELSE 0 END)
+                AS preco_comum_kg_disponivel,
+            SUM(CASE WHEN preco_comum_unidade_base IS NOT NULL THEN 1 ELSE 0 END)
+                AS preco_comum_unidade_base_disponivel,
+            SUM(CASE WHEN quantidade_itens IS NOT NULL THEN 1 ELSE 0 END)
+                AS quantidade_itens_disponivel,
+            SUM(CASE WHEN preco_comum_item IS NOT NULL THEN 1 ELSE 0 END)
+                AS preco_comum_item_disponivel,
+            SUM(CASE WHEN origem_dado = 'prohort' THEN 1 ELSE 0 END)
+                AS origem_prohort,
+            SUM(CASE WHEN houve_conflito_versoes = 1 THEN 1 ELSE 0 END)
+                AS identidades_multiplas_versoes,
+            COALESCE(SUM(versoes_identidade - 1), 0)
+                AS versoes_removidas_na_consolidacao
+        FROM cotacoes_preprocessadas
+        """,
+    )
+    summary.update(
+        consultar_metricas(
+            connection,
+            """
+            SELECT COUNT(*) AS cotacoes_excluidas_auditaveis
+            FROM cotacoes_excluidas_mapeamento
+            """,
+        )
+    )
+    summary.update(
+        consultar_metricas(
+            connection,
+            """
+            SELECT
+                COUNT(*) AS apresentacoes_catalogadas,
+                SUM(CASE WHEN status_mapeamento = 'unidade_nativa'
+                    THEN 1 ELSE 0 END) AS apresentacoes_unidade_nativa,
+                SUM(CASE WHEN status_mapeamento IN (
+                    'intervalo_massa', 'intervalo_quantidade'
+                ) THEN 1 ELSE 0 END) AS apresentacoes_intervalo
+            FROM catalogo_apresentacoes
+            """,
+        )
+    )
+    summary.update(
+        consultar_metricas(
+            connection,
+            """
+            SELECT
+                COUNT(*) AS outliers_suspeitos,
+                SUM(CASE WHEN classificacao = 'erro_provavel'
+                    THEN 1 ELSE 0 END) AS outliers_erro_provavel,
+                SUM(CASE WHEN classificacao = 'inconsistencia_recorrente'
+                    THEN 1 ELSE 0 END) AS outliers_inconsistencia_recorrente,
+                SUM(CASE WHEN classificacao = 'extremo_isolado'
+                    THEN 1 ELSE 0 END) AS outliers_extremo_isolado
+            FROM outliers_suspeitos
+            """,
+        )
+    )
+    summary.update(
+        consultar_metricas(
+            connection,
+            """
+            SELECT
+                COUNT(*) AS regras_inferencia_total,
+                SUM(CASE WHEN status_regra = 'candidata'
+                    THEN 1 ELSE 0 END) AS regras_inferencia_candidatas,
+                SUM(CASE WHEN status_regra = 'aplicada'
+                    THEN 1 ELSE 0 END) AS regras_inferencia_aplicadas
+            FROM regras_conversao_inferida
+            """,
+        )
+    )
     connection.executemany(
         "INSERT INTO resumo_preprocessamento(indicador, valor) VALUES (?, ?)",
         [(name, str(value)) for name, value in summary.items()],
@@ -2140,11 +2229,70 @@ def validar_saida(
     if integridade != [("ok",)]:
         problemas.append(f"PRAGMA quick_check retornou: {integridade!r}")
 
-    total_gravado = int(
-        connection.execute(
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas"
-        ).fetchone()[0]
+    fact_metrics = consultar_metricas(
+        connection,
+        """
+        SELECT
+            COUNT(*) AS total_gravado,
+            SUM(CASE
+                WHEN quote.conversao_kg_disponivel <> CASE
+                    WHEN quote.peso_total_kg IS NOT NULL
+                     AND quote.peso_total_kg > 0 THEN 1
+                    ELSE 0
+                END
+                THEN 1 ELSE 0 END) AS conversoes_inconsistentes,
+            SUM(CASE
+                WHEN (quote.produto_valido = 0
+                      AND quote.registro_status <> 'produto_invalido')
+                  OR (quote.produto_valido = 1
+                      AND quote.registro_status = 'produto_invalido')
+                THEN 1 ELSE 0 END) AS produtos_inconsistentes,
+            SUM(CASE
+                WHEN quote.ordem_precos_inconsistente = 1
+                 AND (
+                    quote.preco_minimo_tratado IS NOT NULL
+                    OR quote.preco_maximo_tratado IS NOT NULL
+                    OR quote.preco_minimo_unidade_base IS NOT NULL
+                    OR quote.preco_maximo_unidade_base IS NOT NULL
+                    OR quote.preco_minimo_item IS NOT NULL
+                    OR quote.preco_maximo_item IS NOT NULL
+                    OR quote.preco_minimo_kg IS NOT NULL
+                    OR quote.preco_maximo_kg IS NOT NULL
+                 )
+                THEN 1 ELSE 0 END) AS precos_inconsistentes_expostos,
+            SUM(CASE
+                WHEN quote.outlier_suspeito <> CASE
+                    WHEN outlier.cotacao_id IS NULL THEN 0 ELSE 1 END
+                THEN 1 ELSE 0 END) AS outliers_inconsistentes,
+            SUM(CASE
+                WHEN quote.outlier_status <> CASE
+                    WHEN outlier.cotacao_id IS NULL THEN 'nao_suspeito'
+                    ELSE outlier.classificacao
+                END
+                THEN 1 ELSE 0 END) AS status_outliers_inconsistentes,
+            SUM(CASE
+                WHEN quote.versoes_identidade < 1
+                  OR quote.houve_conflito_versoes <> CASE
+                    WHEN quote.versoes_identidade > 1 THEN 1 ELSE 0 END
+                THEN 1 ELSE 0 END) AS versoes_inconsistentes,
+            SUM(CASE
+                WHEN (quote.tipo_conversao = 'inferida_alta_confianca'
+                      AND (rule.id IS NULL OR rule.status_regra <> 'aplicada'))
+                  OR (quote.regra_inferencia_id IS NOT NULL
+                      AND quote.tipo_conversao <> 'inferida_alta_confianca')
+                THEN 1 ELSE 0 END) AS inferencias_inconsistentes,
+            SUM(CASE
+                WHEN quote.status_mapeamento IN (
+                    'ambigua', 'sem_quantidade_exata', 'sem_unidade'
+                ) THEN 1 ELSE 0 END) AS cotacoes_mapeamento_excluido
+        FROM cotacoes_preprocessadas quote
+        LEFT JOIN outliers_suspeitos outlier
+          ON outlier.cotacao_id = quote.cotacao_id
+        LEFT JOIN regras_conversao_inferida rule
+          ON rule.id = quote.regra_inferencia_id
+        """,
     )
+    total_gravado = fact_metrics["total_gravado"]
     if total_gravado != total_esperado:
         problemas.append(
             f"esperadas {total_esperado} cotacoes, mas foram gravadas {total_gravado}"
@@ -2215,57 +2363,21 @@ def validar_saida(
             f"{unidades_nativas_incorretas} unidades nativas basicas mal classificadas"
         )
 
-    conversoes_inconsistentes = int(
-        connection.execute(
-            """
-            SELECT COUNT(*)
-            FROM cotacoes_preprocessadas
-            WHERE conversao_kg_disponivel <> CASE
-                WHEN peso_total_kg IS NOT NULL AND peso_total_kg > 0 THEN 1
-                ELSE 0
-            END
-            """
-        ).fetchone()[0]
-    )
+    conversoes_inconsistentes = fact_metrics["conversoes_inconsistentes"]
     if conversoes_inconsistentes:
         problemas.append(
             f"{conversoes_inconsistentes} marcadores de conversao inconsistentes"
         )
 
-    produtos_inconsistentes = int(
-        connection.execute(
-            """
-            SELECT COUNT(*)
-            FROM cotacoes_preprocessadas
-            WHERE (produto_valido = 0 AND registro_status <> 'produto_invalido')
-               OR (produto_valido = 1 AND registro_status = 'produto_invalido')
-            """
-        ).fetchone()[0]
-    )
+    produtos_inconsistentes = fact_metrics["produtos_inconsistentes"]
     if produtos_inconsistentes:
         problemas.append(
             f"{produtos_inconsistentes} marcadores de produto inconsistentes"
         )
 
-    precos_inconsistentes_expostos = int(
-        connection.execute(
-            """
-            SELECT COUNT(*)
-            FROM cotacoes_preprocessadas
-            WHERE ordem_precos_inconsistente = 1
-              AND (
-                  preco_minimo_tratado IS NOT NULL
-                  OR preco_maximo_tratado IS NOT NULL
-                  OR preco_minimo_unidade_base IS NOT NULL
-                  OR preco_maximo_unidade_base IS NOT NULL
-                  OR preco_minimo_item IS NOT NULL
-                  OR preco_maximo_item IS NOT NULL
-                  OR preco_minimo_kg IS NOT NULL
-                  OR preco_maximo_kg IS NOT NULL
-              )
-            """
-        ).fetchone()[0]
-    )
+    precos_inconsistentes_expostos = fact_metrics[
+        "precos_inconsistentes_expostos"
+    ]
     if precos_inconsistentes_expostos:
         problemas.append(
             f"{precos_inconsistentes_expostos} limites de preco inconsistentes expostos"
@@ -2281,39 +2393,15 @@ def validar_saida(
             f"{produtos_invalidos_nas_views} produtos invalidos na visao analitica"
         )
 
-    outliers_inconsistentes = int(
-        connection.execute(
-            """
-            SELECT COUNT(*)
-            FROM cotacoes_preprocessadas quote
-            LEFT JOIN outliers_suspeitos outlier
-                ON outlier.cotacao_id = quote.cotacao_id
-            WHERE quote.outlier_suspeito <> CASE
-                WHEN outlier.cotacao_id IS NULL THEN 0
-                ELSE 1
-            END
-            """
-        ).fetchone()[0]
-    )
+    outliers_inconsistentes = fact_metrics["outliers_inconsistentes"]
     if outliers_inconsistentes:
         problemas.append(
             f"{outliers_inconsistentes} marcadores de outlier inconsistentes"
         )
 
-    status_outliers_inconsistentes = int(
-        connection.execute(
-            """
-            SELECT COUNT(*)
-            FROM cotacoes_preprocessadas quote
-            LEFT JOIN outliers_suspeitos outlier
-                ON outlier.cotacao_id = quote.cotacao_id
-            WHERE quote.outlier_status <> CASE
-                WHEN outlier.cotacao_id IS NULL THEN 'nao_suspeito'
-                ELSE outlier.classificacao
-            END
-            """
-        ).fetchone()[0]
-    )
+    status_outliers_inconsistentes = fact_metrics[
+        "status_outliers_inconsistentes"
+    ]
     if status_outliers_inconsistentes:
         problemas.append(
             f"{status_outliers_inconsistentes} classificacoes de outlier inconsistentes"
@@ -2348,49 +2436,21 @@ def validar_saida(
             f"{identidades_duplicadas} identidades permaneceram duplicadas"
         )
 
-    versoes_inconsistentes = int(
-        connection.execute(
-            """
-            SELECT COUNT(*)
-            FROM cotacoes_preprocessadas
-            WHERE versoes_identidade < 1
-               OR houve_conflito_versoes <> CASE
-                    WHEN versoes_identidade > 1 THEN 1 ELSE 0
-                  END
-            """
-        ).fetchone()[0]
-    )
+    versoes_inconsistentes = fact_metrics["versoes_inconsistentes"]
     if versoes_inconsistentes:
         problemas.append(
             f"{versoes_inconsistentes} marcadores de consolidacao inconsistentes"
         )
 
-    inferencias_inconsistentes = int(
-        connection.execute(
-            """
-            SELECT COUNT(*)
-            FROM cotacoes_preprocessadas quote
-            LEFT JOIN regras_conversao_inferida rule
-              ON rule.id = quote.regra_inferencia_id
-            WHERE (quote.tipo_conversao = 'inferida_alta_confianca'
-                   AND (rule.id IS NULL OR rule.status_regra <> 'aplicada'))
-               OR (quote.regra_inferencia_id IS NOT NULL
-                   AND quote.tipo_conversao <> 'inferida_alta_confianca')
-            """
-        ).fetchone()[0]
-    )
+    inferencias_inconsistentes = fact_metrics["inferencias_inconsistentes"]
     if inferencias_inconsistentes:
         problemas.append(
             f"{inferencias_inconsistentes} conversoes inferidas inconsistentes"
         )
 
-    cotacoes_mapeamento_excluido = int(
-        connection.execute(
-            "SELECT COUNT(*) FROM cotacoes_preprocessadas "
-            "WHERE status_mapeamento IN "
-            "('ambigua', 'sem_quantidade_exata', 'sem_unidade')"
-        ).fetchone()[0]
-    )
+    cotacoes_mapeamento_excluido = fact_metrics[
+        "cotacoes_mapeamento_excluido"
+    ]
     if cotacoes_mapeamento_excluido:
         problemas.append(
             f"{cotacoes_mapeamento_excluido} cotacoes com mapeamento excluido "
@@ -2433,6 +2493,7 @@ def construir_banco(args: argparse.Namespace) -> Path:
     started_at = datetime.now(timezone.utc).isoformat()
     parameters = {
         "chunk_size": args.chunk_size,
+        "sqlite_write_batch_size": SQLITE_WRITE_BATCH_SIZE,
         "unidade_mercado": MARKET_UNIT,
         "outlier_low": args.outlier_low,
         "outlier_high": args.outlier_high,
@@ -2447,16 +2508,39 @@ def construir_banco(args: argparse.Namespace) -> Path:
 
     source: sqlite3.Connection | None = None
     target: sqlite3.Connection | None = None
+    inicio_total = perf_counter()
     try:
+        inicio_etapa = perf_counter()
         source = abrir_origem(source_path)
         catalog = construir_catalogo_apresentacoes(source)
-        inference_rules = construir_regras_inferencia(source, catalog, args)
+        product_aliases = construir_chaves_produtos(source)
+        inicio_etapa = registrar_tempo_etapa(
+            "catálogos e chaves de produtos",
+            inicio_etapa,
+        )
+        inference_rules = construir_regras_inferencia(
+            source,
+            catalog,
+            product_aliases,
+            args,
+        )
+        inicio_etapa = registrar_tempo_etapa(
+            "regras de inferência",
+            inicio_etapa,
+        )
         preparar_ultimas_coletas(source)
         total_source = int(source.execute("SELECT COUNT(*) FROM cotacoes").fetchone()[0])
+        inicio_etapa = registrar_tempo_etapa(
+            "seleção das últimas coletas",
+            inicio_etapa,
+        )
 
         target = sqlite3.connect(temporary_output)
-        target.execute("PRAGMA journal_mode = DELETE")
-        target.execute("PRAGMA synchronous = NORMAL")
+        # A saída só é publicada após a validação e pode ser reconstruída em
+        # caso de interrupção; o banco bruto e o banco final não são alterados.
+        target.execute("PRAGMA journal_mode = OFF")
+        target.execute("PRAGMA synchronous = OFF")
+        target.execute("PRAGMA locking_mode = EXCLUSIVE")
         criar_esquema(target)
         target.execute(
             """
@@ -2478,15 +2562,24 @@ def construir_banco(args: argparse.Namespace) -> Path:
         inserir_catalogo_apresentacoes(target, catalog)
         inserir_regras_inferencia(target, inference_rules)
         target.commit()
+        inicio_etapa = registrar_tempo_etapa(
+            "preparação do banco temporário",
+            inicio_etapa,
+        )
 
         processing_stats = inserir_cotacoes(
             source,
             target,
             catalog,
+            product_aliases,
             inference_rules,
             args.chunk_size,
         )
         target.commit()
+        inicio_etapa = registrar_tempo_etapa(
+            "transformação e gravação das cotações",
+            inicio_etapa,
+        )
 
         if (
             processing_stats["cotacoes_consolidadas"]
@@ -2515,8 +2608,16 @@ def construir_banco(args: argparse.Namespace) -> Path:
         )
         print(f"Outliers apenas sinalizados: {outliers:,}", flush=True)
         target.commit()
+        inicio_etapa = registrar_tempo_etapa(
+            "detecção e marcação de outliers",
+            inicio_etapa,
+        )
 
         criar_indices_e_views(target)
+        inicio_etapa = registrar_tempo_etapa(
+            "criação de índices e views",
+            inicio_etapa,
+        )
         atualizar_cobertura_catalogo(target)
         summary = gerar_resumo(target)
         execution_counts = {
@@ -2529,12 +2630,17 @@ def construir_banco(args: argparse.Namespace) -> Path:
             [(name, str(value)) for name, value in execution_counts.items()],
         )
         summary.update(execution_counts)
+        inicio_etapa = registrar_tempo_etapa(
+            "cobertura e resumo",
+            inicio_etapa,
+        )
         validar_saida(
             target,
             processing_stats["cotacoes_gravadas"],
             len(catalog),
             processing_stats["cotacoes_excluidas_mapeamento"],
         )
+        registrar_tempo_etapa("validação final", inicio_etapa)
         target.execute(
             """
             UPDATE execucoes_preprocessamento
@@ -2557,6 +2663,11 @@ def construir_banco(args: argparse.Namespace) -> Path:
 
         print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
         print(f"Banco pré-processado criado em: {output.resolve()}", flush=True)
+        print(
+            f"Tempo total do pré-processamento: "
+            f"{perf_counter() - inicio_total:.2f} s.",
+            flush=True,
+        )
         return output
     except Exception:
         if target is not None:
@@ -2615,7 +2726,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="substitui atomicamente um banco pré-processado existente",
     )
-    parser.add_argument("--chunk-size", type=int, default=50_000)
+    parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
     parser.add_argument("--outlier-low", type=float, default=DEFAULT_OUTLIER_LOW)
     parser.add_argument("--outlier-high", type=float, default=DEFAULT_OUTLIER_HIGH)
     parser.add_argument(

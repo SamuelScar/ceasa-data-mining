@@ -38,3 +38,23 @@ services:
       - --output-db
       - data/cotacoes_preprocessadas.sqlite
       - --overwrite
+
+  granger:
+    <<: *python-service
+    profiles:
+      - tarefas
+    environment:
+      GRANGER_DATA_INICIO: ${GRANGER_DATA_INICIO:-2022-01-04}
+      GRANGER_DATA_CORTE_TREINO: ${GRANGER_DATA_CORTE_TREINO:-2025-10-31}
+      GRANGER_DATA_FIM_TESTE: ${GRANGER_DATA_FIM_TESTE:-2026-10-31}
+      GRANGER_MIN_DIAS_COMUNS: ${GRANGER_MIN_DIAS_COMUNS:-400}
+      GRANGER_FFILL_LIMITE: ${GRANGER_FFILL_LIMITE:-3}
+      GRANGER_MAX_LAG: ${GRANGER_MAX_LAG:-10}
+      GRANGER_ALPHA: ${GRANGER_ALPHA:-0.05}
+    command:
+      - python
+      - granger/executar_granger.py
+      - data/cotacoes_preprocessadas.sqlite
+      - --output-db
+      - data/granger.sqlite
+      - --overwrite

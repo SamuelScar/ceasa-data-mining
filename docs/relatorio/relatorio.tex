@@ -12,6 +12,8 @@
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{amsmath}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
 \usepackage{csquotes}
 \usepackage{newtxtext,newtxmath}
 \usepackage[
@@ -50,7 +52,7 @@
     }\\[0.5cm]
 
     {\normalsize
-        Pré-processamento para análise do Efeito Dominó
+        Pré-processamento, séries temporais e teste de Granger
     }\\[2cm]
 
     {\normalsize
@@ -82,23 +84,22 @@
 \addcontentsline{toc}{section}{Resumo}
 
 Este trabalho investiga a dinâmica de preços de produtos agrícolas
-comercializados em diferentes Centrais de Abastecimento (CEASAs). A primeira
-etapa da pesquisa concentra-se no Efeito Dominó, entendido como a possibilidade
-de variações de preço observadas em um mercado contribuírem para antecipar
-variações posteriores em outro. Os dados utilizados foram coletados por um
-\textit{crawler} e organizados em um banco SQLite com mais de dois milhões de
-cotações. Antes da análise temporal, foi desenvolvido um pré-processamento para
-consolidar versões da mesma cotação, normalizar produtos e apresentações,
-converter preços para unidades comparáveis quando existem evidências
-suficientes e registrar limitações sem criar valores artificiais. O processo
-gera um novo banco SQLite, preserva o banco bruto e mantém indicadores de
-qualidade, regras de conversão e possíveis \textit{outliers}. Na última
-execução realizada, 2.380.608 registros brutos resultaram em 2.372.920
-cotações consolidadas. Após a exclusão de 87.820 registros sem mapeamento
-suficiente, foram gravadas 2.285.100 cotações no banco derivado, das quais
-2.080.417 compõem a camada analítica principal. O pré-processamento da base
-atual foi concluído; as regras de conversão inferida permanecem candidatas até
-a definição do período de treino.
+comercializados em diferentes Centrais de Abastecimento (CEASAs). A etapa atual
+concentra-se no Efeito Dominó, entendido como a possibilidade de movimentos de
+preço observados em um entreposto contribuírem para antecipar movimentos
+posteriores em outro. Os dados foram coletados por um \textit{crawler} e
+organizados em um banco SQLite com mais de dois milhões de cotações. O fluxo
+executado até o momento compreende a preservação do banco bruto, o
+pré-processamento das cotações, a construção de séries temporais comparáveis e
+o teste de causalidade de Granger. Na execução atual, 2.388.035 registros
+brutos resultaram em 2.295.094 cotações no banco derivado, das quais 1.833.726
+possuem preço comum em R\$/kg. O recorte temporal carregou 175.160 cotações e
+produziu 252 pares candidatos entre mercados. Dos 134 pares elegíveis, todos
+atenderam aos critérios de estacionariedade; foram testadas 268 direções e 62
+apresentaram significância após a correção de Benjamini--Hochberg. Esses
+resultados são preliminares e representam evidência de precedência temporal e
+capacidade preditiva no sentido de Granger, não uma demonstração isolada de
+causalidade econômica direta.
 
 \noindent\textbf{Palavras-chave:} CEASA; mineração de dados; séries temporais;
 pré-processamento; preços agrícolas; Efeito Dominó.
@@ -128,11 +129,12 @@ mesma cotação e valores potencialmente suspeitos. Comparar diretamente os
 preços originais poderia confundir uma mudança de embalagem com uma variação
 econômica real.
 
-Diante disso, a primeira entrega do projeto foi a construção de um fluxo de
-pré-processamento rastreável. Seu objetivo é produzir uma base derivada mais
-adequada às futuras análises temporais, sem modificar o banco bruto e sem
-antecipar decisões relativas aos produtos, períodos ou modelos que serão
-utilizados posteriormente.
+Diante disso, foi construído um fluxo rastreável que parte do banco produzido
+pelo \textit{crawler}, gera uma base pré-processada, organiza séries temporais
+comparáveis e aplica o teste de Granger. O banco bruto não é modificado e cada
+etapa gera uma saída derivada auditável. Até o momento, não foi realizado o
+treinamento de um modelo preditivo: essa fase será definida após a
+caracterização operacional do Efeito Dominó.
 
 O uso do termo Efeito Dominó neste projeto é uma analogia à propagação
 sequencial descrita em outras áreas. Na segurança de processos, por exemplo,
@@ -167,9 +169,10 @@ desenvolvidas posteriormente.
 
 \subsection{Objetivo geral}
 
-Preparar as cotações históricas das CEASAs para a futura investigação do
-Efeito Dominó entre entrepostos, preservando a rastreabilidade das
-transformações e evitando conversões sem evidência suficiente.
+Preparar e analisar as cotações históricas das CEASAs para investigar a
+existência de influência temporal entre entrepostos no sentido de Granger,
+preservando a rastreabilidade das transformações e evitando conversões sem
+evidência suficiente.
 
 \subsection{Objetivos específicos}
 
@@ -182,7 +185,11 @@ transformações e evitando conversões sem evidência suficiente.
     \item identificar registros inadequados para a camada analítica;
     \item sinalizar e preservar possíveis \textit{outliers}, mantendo-os fora
     da camada analítica principal sem apagar os valores originais;
-    \item gerar um banco derivado reproduzível e validado.
+    \item gerar um banco derivado reproduzível e validado;
+    \item construir séries diárias comparáveis por produto e entreposto;
+    \item verificar a estacionariedade das séries de retornos;
+    \item testar a precedência temporal entre pares de entrepostos por meio da
+    causalidade de Granger.
 \end{itemize}
 
 % ==========================================
@@ -198,6 +205,12 @@ efeitos capazes de atingir outras unidades. Embora o domínio seja diferente,
 a noção de propagação espacial e sequencial contribui para delimitar a analogia
 empregada neste projeto. Aqui, os eventos analisados são movimentos de preço,
 e não acidentes industriais.
+
+O teste proposto por \textcite{granger1969} verifica se valores passados de uma
+série acrescentam informação à previsão de outra série, além da informação já
+contida no próprio histórico da variável prevista. Portanto, a expressão
+causalidade de Granger indica precedência temporal com ganho preditivo e não,
+isoladamente, um mecanismo econômico causal.
 
 No domínio de preços agrícolas, \textcite{oliveira2023} analisaram séries
 mensais dos tomates Longa Vida e Cajá comercializados em Fortaleza e Ibiapaba,
@@ -220,9 +233,9 @@ apresentações, entrepostos, CEASAs, coletas e proveniências. A origem das
 observações também permite distinguir os registros coletados diretamente
 daqueles provenientes do complemento PROHORT.
 
-A execução mais recente partiu de 2.380.608 cotações. Após a seleção das
-coletas mais recentes e a consolidação de versões, foram obtidas 2.372.920
-cotações. A exclusão de mapeamentos insuficientes resultou em 2.285.100
+A execução mais recente partiu de 2.388.035 cotações. Após a seleção das
+coletas mais recentes e a consolidação de versões, foram obtidas 2.380.218
+cotações. A exclusão de mapeamentos insuficientes resultou em 2.295.094
 cotações gravadas no banco derivado. A Tabela~\ref{tab:diagnostico} resume os
 principais indicadores observados nessa execução.
 
@@ -235,18 +248,18 @@ principais indicadores observados nessa execução.
         \toprule
         \textbf{Indicador} & \textbf{Quantidade} \\
         \midrule
-        Cotações no banco bruto & 2.380.608 \\
-        Cotações consolidadas & 2.372.920 \\
-        Cotações excluídas por mapeamento insuficiente & 87.820 \\
-        Cotações gravadas no banco derivado & 2.285.100 \\
-        Identidades com múltiplas versões mantidas & 5.987 \\
+        Cotações no banco bruto & 2.388.035 \\
+        Cotações consolidadas & 2.380.218 \\
+        Cotações excluídas por mapeamento insuficiente & 85.124 \\
+        Cotações gravadas no banco derivado & 2.295.094 \\
+        Identidades com múltiplas versões mantidas & 6.041 \\
         Apresentações catalogadas & 1.941 \\
-        Cotações com preço comum válido & 2.081.125 \\
-        Cotações com preço comum por kg & 1.824.620 \\
-        Cotações na camada analítica principal & 2.080.417 \\
-        \textit{Outliers} desconsiderados da camada principal & 708 \\
-        Regras de conversão inferida candidatas & 69 \\
-        Regras com critérios estruturais atendidos & 49 \\
+        Cotações com preço comum válido & 2.091.042 \\
+        Cotações com preço comum por kg & 1.833.726 \\
+        Cotações na camada analítica principal & 2.090.331 \\
+        \textit{Outliers} desconsiderados da camada principal & 711 \\
+        Regras de conversão inferida aplicadas & 13 \\
+        Cotações com conversão inferida & 3.250 \\
         \bottomrule
     \end{tabular}
 
@@ -263,7 +276,42 @@ critérios configuráveis forem alterados.
 % 5. METODOLOGIA
 % ==========================================
 
-\section{Metodologia do pré-processamento}
+\section{Metodologia}
+
+\subsection{Visão geral do fluxo}
+
+A Figura~\ref{fig:fluxo-metodologico} apresenta as etapas concluídas até o
+momento. Cada banco derivado preserva a origem e os parâmetros de sua execução,
+permitindo reproduzir o caminho entre a coleta e os resultados estatísticos.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        node distance=0.45cm,
+        etapa/.style={
+            draw,
+            rounded corners,
+            align=center,
+            minimum width=9.4cm,
+            minimum height=0.8cm,
+            fill=black!5
+        },
+        fluxo/.style={-{Latex[length=2mm]}, thick}
+    ]
+        \node[etapa] (crawler) {\textit{Crawler} das CEASAs\\coleta das cotações};
+        \node[etapa, below=of crawler] (bruto) {Banco bruto\\\texttt{data/cotacoes.sqlite}};
+        \node[etapa, below=of bruto] (preprocessamento) {Pré-processamento\\\texttt{data/cotacoes\_preprocessadas.sqlite}};
+        \node[etapa, below=of preprocessamento] (series) {Construção das séries temporais\\mediana diária e retornos logarítmicos};
+        \node[etapa, below=of series] (granger) {Teste de causalidade de Granger\\\texttt{data/granger.sqlite}};
+
+        \draw[fluxo] (crawler) -- (bruto);
+        \draw[fluxo] (bruto) -- (preprocessamento);
+        \draw[fluxo] (preprocessamento) -- (series);
+        \draw[fluxo] (series) -- (granger);
+    \end{tikzpicture}
+    \caption{Fluxo metodológico executado até o teste de Granger.}
+    \label{fig:fluxo-metodologico}
+\end{figure}
 
 \subsection{Ambiente e reprodutibilidade}
 
@@ -344,8 +392,12 @@ datas, e quando todos os pesos explícitos observados concordam.
 
 Os preços não são utilizados para escolher o peso inferido. Essa decisão evita
 aproximar artificialmente os preços entre CEASAs e produzir o padrão de
-propagação que a pesquisa pretende investigar. Sem uma data limite definida
-para a inferência, as regras são apenas registradas como candidatas.
+propagação que a pesquisa pretende investigar. Para impedir que informações
+futuras participem da criação das regras, a data limite de inferência foi
+fixada em 31 de outubro de 2025, a mesma data de corte do conjunto de treino.
+Na execução atual, 13 regras foram aplicadas a 3.250 cotações; outras 11 regras
+permaneceram apenas como candidatas por não atenderem a todos os critérios
+definidos.
 
 \subsection{Exclusões e indicadores de qualidade}
 
@@ -391,6 +443,112 @@ igualdade entre as quantidades consolidadas, gravadas e excluídas. A validaçã
 também confere a cobertura auditável das exclusões e garante que nenhum
 \textit{outlier} permaneça na camada analítica principal. Com a execução
 validada, o pré-processamento da base atual está concluído.
+
+% ==========================================
+% 6. SÉRIES TEMPORAIS
+% ==========================================
+
+\section{Construção das séries temporais}
+
+O recorte atual considera 12 produtos e sete entrepostos: Recife, Grande
+Vitória, Curitiba, Maringá, Cascavel, Foz do Iguaçu e Londrina. Foram utilizadas
+cotações entre 4 de janeiro de 2022 e 31 de outubro de 2026, desde que possuam
+preço comum válido em R\$/kg, não estejam sinalizadas como \textit{outlier} e
+tenham conversão exata, calculada, padronizada ou inferida com alta confiança.
+O período até 31 de outubro de 2025 foi destinado à construção e ao diagnóstico
+das séries; o intervalo posterior foi preservado para avaliações futuras.
+
+Quando existe mais de uma cotação para o mesmo produto, entreposto e data,
+utiliza-se a mediana diária do preço comum em R\$/kg. Fins de semana são
+desconsiderados e falhas curtas podem ser preenchidas pelo último valor
+observado por, no máximo, três dias úteis consecutivos. Lacunas maiores
+permanecem abertas para não criar continuidade artificial. Em seguida, os
+preços são transformados em retornos logarítmicos diários:
+
+\begin{equation}
+    r_t = \ln(P_t) - \ln(P_{t-1}),
+\end{equation}
+
+\noindent em que $P_t$ representa a mediana diária do preço. Essa transformação
+direciona a análise às variações relativas, reduzindo o efeito dos diferentes
+níveis de preço entre mercados.
+
+Na execução atual, o recorte carregou 175.160 cotações, desconsiderou 320
+registros de fim de semana e produziu 63.163 pontos diários observados e 8.545
+pontos preenchidos. Nenhuma cotação inferida entrou nesse recorte específico.
+
+% ==========================================
+% 7. GRANGER
+% ==========================================
+
+\section{Teste de causalidade de Granger}
+
+Para cada produto, foram formados todos os pares possíveis entre os sete
+entrepostos, totalizando 252 pares candidatos. Um par somente é elegível quando
+as duas séries possuem ao menos 400 dias úteis observados em comum no período
+de treino. Os retornos de cada série são avaliados pelos testes ADF e KPSS; o
+par segue para Granger apenas quando as duas séries atendem simultaneamente aos
+critérios de estacionariedade.
+
+As duas direções de cada par são testadas separadamente. São avaliadas de uma a
+dez defasagens em uma amostra fixa, e a quantidade de defasagens é escolhida
+pelo Critério de Informação Bayesiano (BIC). O teste F verifica se os valores
+passados da série de origem acrescentam informação à previsão da série de
+destino. Como várias hipóteses são avaliadas, os valores $p$ recebem correção
+global de Benjamini--Hochberg, com taxa de falsas descobertas de 5\%
+\cite{benjamini1995}.
+
+Um resultado significativo é interpretado como evidência de influência
+temporal preditiva no sentido de Granger. Ele não prova, sozinho, que um
+entreposto provoque diretamente a alteração de preço no outro, pois fatores
+externos ou variáveis não observadas também podem explicar a relação.
+
+\section{Resultados atuais}
+
+A Tabela~\ref{tab:granger-resultados} resume a execução atual. Dos 252 pares
+candidatos, 134 atenderam ao mínimo de sobreposição e todos passaram pelos
+diagnósticos de estacionariedade. Isso produziu 268 direções testadas, das
+quais 80 seriam significativas sem ajuste e 62 permaneceram significativas
+após a correção global.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Resumo dos resultados atuais do teste de Granger.}
+    \label{tab:granger-resultados}
+    \small
+    \begin{tabular}{lr}
+        \toprule
+        \textbf{Indicador} & \textbf{Quantidade} \\
+        \midrule
+        Cotações carregadas no recorte & 175.160 \\
+        Pares candidatos & 252 \\
+        Pares elegíveis e estacionários & 134 \\
+        Direções testadas & 268 \\
+        Direções significativas sem correção & 80 \\
+        Direções significativas após correção FDR & 62 \\
+        Pares com ao menos uma direção significativa & 50 \\
+        Relações unidirecionais & 38 \\
+        Relações bidirecionais & 12 \\
+        \bottomrule
+    \end{tabular}
+
+    \par\smallskip
+    \footnotesize
+    Fonte: banco \texttt{data/granger.sqlite} da execução atual.
+\end{table}
+
+Os resultados mostram, no recorte analisado, evidências de influência temporal
+entre determinados entrepostos. Tomate, batata e morango concentraram,
+respectivamente, 14, 13 e 11 direções significativas. Curitiba e Maringá foram
+as origens mais frequentes entre as relações significativas, com 18 e 15
+direções. Esses números são preliminares e poderão mudar caso sejam alterados o
+período, os produtos, os mercados ou a definição operacional do Efeito Dominó.
+
+Até esta etapa, o trabalho demonstrou a existência de relações preditivas no
+sentido de Granger dentro do recorte estudado. O treinamento de modelos ainda
+não foi realizado. O próximo passo será definir formalmente o que constitui um
+evento de Efeito Dominó para então construir os alvos e atributos usados nessa
+fase posterior.
 
 \printbibliography[heading=bibintoc,title={Referências}]
 
