@@ -52,7 +52,7 @@
     }\\[0.5cm]
 
     {\normalsize
-        Pré-processamento, séries temporais e teste de Granger
+        Pré-processamento, teste de Granger e caracterização do Efeito Dominó
     }\\[2cm]
 
     {\normalsize
@@ -90,8 +90,9 @@ preço observados em um entreposto contribuírem para antecipar movimentos
 posteriores em outro. Os dados foram coletados por um \textit{crawler} e
 organizados em um banco SQLite com mais de dois milhões de cotações. O fluxo
 executado até o momento compreende a preservação do banco bruto, o
-pré-processamento das cotações, a construção de séries temporais comparáveis e
-o teste de causalidade de Granger. Na execução atual, 2.388.035 registros
+pré-processamento das cotações, a construção de séries temporais comparáveis,
+o teste de causalidade de Granger e a caracterização do Efeito Dominó. Na
+execução atual, 2.388.035 registros
 brutos resultaram em 2.295.094 cotações no banco derivado, das quais 1.833.726
 possuem preço comum em R\$/kg. O recorte temporal carregou 175.160 cotações e
 produziu 252 pares candidatos entre mercados. Dos 134 pares elegíveis, todos
@@ -99,7 +100,9 @@ atenderam aos critérios de estacionariedade; foram testadas 268 direções e 62
 apresentaram significância após a correção de Benjamini--Hochberg. Esses
 resultados são preliminares e representam evidência de precedência temporal e
 capacidade preditiva no sentido de Granger, não uma demonstração isolada de
-causalidade econômica direta.
+causalidade econômica direta. Nas 62 relações significativas foram encontrados
+6.149 choques na origem; 4.815 puderam ser classificados e 1.881 apresentaram
+resposta no destino dentro da janela de cinco dias úteis.
 
 \noindent\textbf{Palavras-chave:} CEASA; mineração de dados; séries temporais;
 pré-processamento; preços agrícolas; Efeito Dominó.
@@ -130,11 +133,11 @@ preços originais poderia confundir uma mudança de embalagem com uma variação
 econômica real.
 
 Diante disso, foi construído um fluxo rastreável que parte do banco produzido
-pelo \textit{crawler}, gera uma base pré-processada, organiza séries temporais
-comparáveis e aplica o teste de Granger. O banco bruto não é modificado e cada
-etapa gera uma saída derivada auditável. Até o momento, não foi realizado o
-treinamento de um modelo preditivo: essa fase será definida após a
-caracterização operacional do Efeito Dominó.
+pelo \textit{crawler}, gera uma base pré-processada, organiza séries temporais,
+aplica o teste de Granger e caracteriza ocorrências de Efeito Dominó. O banco
+bruto não é modificado e cada etapa gera uma saída derivada auditável. Até o
+momento, não foi realizado o treinamento de um modelo preditivo: essa fase será
+definida a partir da base de eventos caracterizados.
 
 O uso do termo Efeito Dominó neste projeto é uma analogia à propagação
 sequencial descrita em outras áreas. Na segurança de processos, por exemplo,
@@ -189,7 +192,8 @@ evidência suficiente.
     \item construir séries diárias comparáveis por produto e entreposto;
     \item verificar a estacionariedade das séries de retornos;
     \item testar a precedência temporal entre pares de entrepostos por meio da
-    causalidade de Granger.
+    causalidade de Granger;
+    \item caracterizar ocorrências de Efeito Dominó nas relações significativas.
 \end{itemize}
 
 % ==========================================
@@ -280,9 +284,10 @@ critérios configuráveis forem alterados.
 
 \subsection{Visão geral do fluxo}
 
-A Figura~\ref{fig:fluxo-metodologico} apresenta as etapas concluídas até o
-momento. Cada banco derivado preserva a origem e os parâmetros de sua execução,
-permitindo reproduzir o caminho entre a coleta e os resultados estatísticos.
+A Figura~\ref{fig:fluxo-metodologico} apresenta as etapas concluídas até a
+caracterização do Efeito Dominó. Cada banco derivado preserva a origem e os
+parâmetros de sua execução, permitindo reproduzir o caminho entre a coleta e
+os resultados estatísticos.
 
 \begin{figure}[htbp]
     \centering
@@ -300,16 +305,19 @@ permitindo reproduzir o caminho entre a coleta e os resultados estatísticos.
     ]
         \node[etapa] (crawler) {\textit{Crawler} das CEASAs\\coleta das cotações};
         \node[etapa, below=of crawler] (bruto) {Banco bruto\\\texttt{data/cotacoes.sqlite}};
-        \node[etapa, below=of bruto] (preprocessamento) {Pré-processamento\\\texttt{data/cotacoes\_preprocessadas.sqlite}};
+        \node[etapa, below=of bruto] (preprocessamento) {Pré-processamento\\\texttt{resultados/preprocessamento/}\\\texttt{cotacoes\_preprocessadas.sqlite}};
         \node[etapa, below=of preprocessamento] (series) {Construção das séries temporais\\mediana diária e retornos logarítmicos};
-        \node[etapa, below=of series] (granger) {Teste de causalidade de Granger\\\texttt{data/granger.sqlite}};
+        \node[etapa, below=of series] (granger) {Teste de causalidade de Granger\\\texttt{resultados/granger/granger.sqlite}};
+        \node[etapa, below=of granger] (domino) {Caracterização do Efeito Dominó\\\texttt{resultados/efeitos/domino/}\\\texttt{efeito\_domino.sqlite}};
 
         \draw[fluxo] (crawler) -- (bruto);
         \draw[fluxo] (bruto) -- (preprocessamento);
         \draw[fluxo] (preprocessamento) -- (series);
         \draw[fluxo] (series) -- (granger);
+        \draw[fluxo] (granger) -- (domino);
     \end{tikzpicture}
-    \caption{Fluxo metodológico executado até o teste de Granger.}
+    \caption{Fluxo metodológico executado até a caracterização do Efeito
+    Dominó.}
     \label{fig:fluxo-metodologico}
 \end{figure}
 
@@ -319,7 +327,7 @@ O pré-processamento foi implementado em Python e executado em contêiner Docker
 As dependências são gerenciadas pelo \texttt{uv}, enquanto o Docker Compose
 fornece um comando único para construção da imagem e execução do processo. O
 banco bruto é aberto somente para leitura, e o resultado é gravado em um novo
-arquivo, \texttt{data/cotacoes\_preprocessadas.sqlite}.
+arquivo, \path{resultados/preprocessamento/cotacoes_preprocessadas.sqlite}.
 
 A substituição da saída é atômica: o novo banco é construído em um arquivo
 temporário e somente substitui a versão anterior após a conclusão das
@@ -534,7 +542,7 @@ após a correção global.
 
     \par\smallskip
     \footnotesize
-    Fonte: banco \texttt{data/granger.sqlite} da execução atual.
+    Fonte: banco \path{resultados/granger/granger.sqlite} da execução atual.
 \end{table}
 
 Os resultados mostram, no recorte analisado, evidências de influência temporal
@@ -546,9 +554,100 @@ período, os produtos, os mercados ou a definição operacional do Efeito Domin�
 
 Até esta etapa, o trabalho demonstrou a existência de relações preditivas no
 sentido de Granger dentro do recorte estudado. O treinamento de modelos ainda
-não foi realizado. O próximo passo será definir formalmente o que constitui um
-evento de Efeito Dominó para então construir os alvos e atributos usados nessa
-fase posterior.
+não foi realizado. A seção seguinte apresenta a definição operacional adotada
+para localizar ocorrências de Efeito Dominó antes da futura modelagem.
+
+% ==========================================
+% 9. EFEITO DOMINÓ
+% ==========================================
+
+\section{Caracterização do Efeito Dominó}
+
+O resultado de Granger é utilizado como um mapa das relações que devem ser
+observadas, e não como um modelo de previsão. Para cada produto, somente as
+direções que permaneceram significativas após a correção FDR são examinadas.
+Em seguida, as séries são percorridas cronologicamente para localizar uma
+alta no mercado de origem e verificar se ela foi seguida por uma alta no
+mercado de destino.
+
+Uma alta é considerada forte quando supera simultaneamente 5\% e o
+percentil 90 dos retornos daquele produto e entreposto. O percentil é
+calculado apenas com o período de treino, impedindo que dados do período de
+teste influenciem a regra. Tanto o movimento inicial quanto a resposta são
+determinados por cotações realmente observadas; valores preenchidos para
+cobrir falhas curtas não podem iniciar nem confirmar um evento.
+
+Para uma relação direcionada $A \rightarrow B$, a caracterização segue os
+passos abaixo:
+
+\begin{enumerate}
+    \setlength{\itemsep}{0.2em}
+    \item localizar uma alta forte do produto no entreposto $A$;
+    \item confirmar que existe uma cotação observada em $B$ na mesma data;
+    \item desconsiderar como propagação os casos em que $A$ e $B$ já apresentam
+    uma alta forte simultaneamente;
+    \item observar as cotações de $B$ nos cinco dias úteis seguintes;
+    \item registrar Efeito Dominó quando a alta acumulada em $B$ atingir o
+    limite calculado para sua própria série.
+\end{enumerate}
+
+Quando existe cobertura no destino, mas a resposta não ocorre dentro da
+janela, o caso é marcado como não propagado. Casos sem cotação inicial no
+destino, sem cobertura posterior ou com movimento simultâneo são preservados
+para auditoria, mas não recebem rótulo positivo ou negativo. Essa distinção
+evita transformar ausência de dados em ausência de propagação.
+
+A unidade resultante representa um produto, uma origem, um destino e a data
+da alta inicial. Assim, a nova base indicará explicitamente os casos em que a
+propagação foi observada e aqueles em que ela não ocorreu. Essa adaptação segue
+a ideia de um evento inicial que produz uma consequência posterior em outra
+unidade, presente na literatura de efeito dominó \cite{swuste2019}, aplicada
+aqui à transmissão temporal de preços.
+
+A caracterização foi gravada em
+\path{resultados/efeitos/domino/efeito_domino.sqlite}, sem modificar os bancos
+anteriores. A execução pode ser feita isoladamente ou pelo pipeline completo,
+que executa pré-processamento, Granger e caracterização em sequência.
+
+A Tabela~\ref{tab:efeito-domino-resultados} resume a execução atual. Entre os
+4.815 eventos classificáveis, 1.881 foram confirmados, correspondendo a 39,1\%.
+A proporção foi semelhante no treino e no teste, com 39,0\% e 39,2\%,
+respectivamente.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Resumo da caracterização atual do Efeito Dominó.}
+    \label{tab:efeito-domino-resultados}
+    \small
+    \begin{tabular}{lr}
+        \toprule
+        \textbf{Indicador} & \textbf{Quantidade} \\
+        \midrule
+        Relações de Granger analisadas & 62 \\
+        Choques encontrados na origem & 6.149 \\
+        Eventos classificáveis & 4.815 \\
+        Efeitos confirmados & 1.881 \\
+        Efeitos não confirmados & 2.934 \\
+        Movimentos simultâneos & 841 \\
+        Eventos sem base observada no destino & 470 \\
+        Eventos sem cobertura posterior & 23 \\
+        \bottomrule
+    \end{tabular}
+
+    \par\smallskip
+    \footnotesize
+    Fonte: banco
+    \path{resultados/efeitos/domino/efeito_domino.sqlite} da execução atual.
+\end{table}
+
+Todas as 62 relações apresentaram ao menos um evento classificável e uma
+confirmação. Entre as confirmações, 610 ocorreram no primeiro dia útil e 449 no
+segundo. Ainda assim, os 1.881 registros não devem ser interpretados como
+ocorrências totalmente independentes: foram identificados 433 grupos nos quais
+mais de um choque foi associado ao mesmo produto, destino e data de resposta,
+totalizando 647 registros adicionais. Antes do treinamento, será necessário
+definir como agrupar essas sobreposições e comparar a taxa observada com um
+controle formado por relações não significativas ou datas embaralhadas.
 
 \printbibliography[heading=bibintoc,title={Referências}]
 

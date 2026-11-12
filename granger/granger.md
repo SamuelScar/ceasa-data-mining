@@ -10,13 +10,13 @@ mas não será ampliado nem será a fonte oficial dos resultados.
 ## Fluxo
 
 ```text
-data/cotacoes_preprocessadas.sqlite
+resultados/preprocessamento/cotacoes_preprocessadas.sqlite
     -> mediana diária em R$/kg
     -> séries por produto e entreposto
     -> qualificação dos pares
     -> estacionariedade
     -> teste de Granger e correção FDR
-    -> data/granger.sqlite
+    -> resultados/granger/granger.sqlite
 ```
 
 ## Execução
@@ -34,10 +34,10 @@ Depois que o pré-processamento terminar:
 docker compose run --build --rm granger
 ```
 
-O arquivo `data/granger.sqlite` é construído em um arquivo temporário e somente
-substitui uma saída anterior depois da conclusão e da validação estrutural. O
-script recusa um banco pré-processado antigo, incompleto ou produzido com um
-limite de inferência diferente do corte de treino.
+O arquivo `resultados/granger/granger.sqlite` é construído em um arquivo
+temporário e somente substitui uma saída anterior depois da conclusão e da
+validação estrutural. O script recusa um banco pré-processado antigo, incompleto
+ou produzido com um limite de inferência diferente do corte de treino.
 
 ## Recorte fixado
 
@@ -117,7 +117,7 @@ posterior.
 
 ## Banco gerado
 
-As principais estruturas de `data/granger.sqlite` são:
+As principais estruturas de `resultados/granger/granger.sqlite` são:
 
 - `execucoes_granger`: parâmetros, hash e origem da execução;
 - `mercados_recorte` e `produtos_recorte`: universo fixado;

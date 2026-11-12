@@ -1,8 +1,9 @@
 # Mineração de Dados Aplicada à Dinâmica de Preços nas CEASAs
 
-Projeto de mineração de dados para analisar a dinâmica de preços agrícolas entre diferentes CEASAs.
-
-Inicialmente, o trabalho investiga o **Efeito Dominó**, buscando identificar se os preços de outras CEASAs ajudam a prever aumentos em um mercado específico.
+Projeto de mineração de dados para analisar a dinâmica de preços agrícolas entre
+diferentes CEASAs. O trabalho está organizado em três frentes: **Efeito
+Dominó**, **Efeito Foguete e Pena** e **Volatilidade**. A implementação atual
+abrange o Efeito Dominó.
 
 ## Documentos
 
@@ -28,7 +29,7 @@ para conhecer as transformações e decisões adotadas.
 
 ## Séries temporais e teste de Granger
 
-A etapa de Granger será executada por um script Python normal, sem depender de
+A etapa de Granger é executada por um script Python normal, sem depender de
 notebooks. O serviço correspondente já possui uma entrada própria no Docker
 Compose:
 
@@ -36,11 +37,39 @@ Compose:
 docker compose run --build --rm granger
 ```
 
-O serviço utilizará `data/cotacoes_preprocessadas.sqlite` e gerará
-`data/granger.sqlite`, preservando as séries, diagnósticos e todos os testes
-realizados. Consulte a
+O serviço utilizará
+`resultados/preprocessamento/cotacoes_preprocessadas.sqlite` e gerará
+`resultados/granger/granger.sqlite`, preservando as séries, diagnósticos e todos
+os testes realizados. Consulte a
 [documentação da etapa de Granger](granger/granger.md) para acompanhar as
 decisões metodológicas e as estruturas geradas.
+
+## Caracterização do Efeito Dominó
+
+Depois de gerar `resultados/granger/granger.sqlite`, execute a caracterização
+dos eventos:
+
+```bash
+docker compose run --build --rm efeito-domino
+```
+
+O processo gera `resultados/efeitos/domino/efeito_domino.sqlite` sem alterar os
+bancos anteriores. Consulte a
+[documentação do Efeito Dominó](efeitos/domino/efeito_domino.md) para conhecer
+a regra de classificação e os resultados atuais.
+
+## Pipeline completo
+
+Para executar sequencialmente pré-processamento, Granger e Efeito Dominó:
+
+```bash
+docker compose run --build --rm pipeline-completo
+```
+
+O comando mostra a etapa atual, a porcentagem geral, as etapas concluídas e
+restantes e o tempo decorrido. Consulte a
+[documentação do pipeline](pipeline/pipeline.md) para conhecer o fluxo e o
+comportamento em caso de falha.
 
 ## Ambiente Python com Docker
 
@@ -58,7 +87,9 @@ Para executar um script Python sem iniciar o JupyterLab:
 docker compose run --rm workspace python caminho/do/script.py
 ```
 
-O diretório do projeto é montado em `/workspace`. O dataset permanece fora da imagem Docker e pode ser acessado pelo diretório `data/` após a extração.
+O diretório do projeto é montado em `/workspace`. O banco bruto permanece em
+`data/`, enquanto todos os bancos e arquivos derivados ficam em `resultados/`.
+Essa pasta é criada automaticamente pelos comandos e permanece fora do Git.
 
 As dependências Python são gerenciadas pelo `uv`, declaradas no `pyproject.toml` e fixadas no `uv.lock`.
 

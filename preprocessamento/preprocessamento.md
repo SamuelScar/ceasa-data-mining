@@ -1,9 +1,9 @@
 # Pré-processamento das cotações CEASA
 
 O pré-processamento lê `data/cotacoes.sqlite` sem alterá-lo e gera
-`data/cotacoes_preprocessadas.sqlite`. A saída reúne as cotações consolidadas,
-os preços tratados e os indicadores de qualidade necessários para as etapas
-posteriores do trabalho.
+`resultados/preprocessamento/cotacoes_preprocessadas.sqlite`. A saída reúne as
+cotações consolidadas, os preços tratados e os indicadores de qualidade
+necessários para as etapas posteriores do trabalho.
 
 ## Execução
 

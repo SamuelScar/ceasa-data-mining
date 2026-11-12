@@ -19,7 +19,7 @@
 
   * **2.378.073** cotações lógicas consolidadas (pela mediana de preços).
 
-  * **2.253.313** registros gravados no banco derivado `data/cotacoes_preprocessadas.sqlite`.
+  * **2.253.313** registros gravados no banco derivado atualmente localizado em `resultados/preprocessamento/cotacoes_preprocessadas.sqlite`.
 
   * **1.828.678** cotações convertidas diretamente para R\$/kg.
 

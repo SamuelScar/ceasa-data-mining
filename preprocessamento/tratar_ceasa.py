@@ -7,7 +7,7 @@ transformações aplicadas e não altera o banco de origem.
 
 Exemplo:
     python tratar_ceasa.py data/cotacoes.sqlite \
-        --output-db data/cotacoes_preprocessadas.sqlite
+        --output-db resultados/preprocessamento/cotacoes_preprocessadas.sqlite
 """
 
 from __future__ import annotations
@@ -2718,7 +2718,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("database", help="SQLite bruto ou arquivo .sqlite.xz")
     parser.add_argument(
         "--output-db",
-        default="data/cotacoes_preprocessadas.sqlite",
+        default="resultados/preprocessamento/cotacoes_preprocessadas.sqlite",
         help="novo SQLite gerado pelo pré-processamento",
     )
     parser.add_argument(

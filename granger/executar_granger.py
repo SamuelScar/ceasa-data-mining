@@ -113,7 +113,7 @@ def construir_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-db",
         type=Path,
-        default=Path("data/granger.sqlite"),
+        default=Path("resultados/granger/granger.sqlite"),
         help="SQLite que receberá as séries e os resultados",
     )
     parser.add_argument(
