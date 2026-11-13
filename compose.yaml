@@ -75,6 +75,23 @@ services:
       - resultados/efeitos/domino/efeito_domino.sqlite
       - --overwrite
 
+  base-modelagem:
+    <<: *python-service
+    profiles:
+      - tarefas
+    environment:
+      MODELAGEM_INICIO_VALIDACAO_1: ${MODELAGEM_INICIO_VALIDACAO_1:-2024-01-01}
+      MODELAGEM_INICIO_VALIDACAO_2: ${MODELAGEM_INICIO_VALIDACAO_2:-2025-01-01}
+    command:
+      - python
+      - modelagem/gerar_base_modelagem.py
+      - resultados/preprocessamento/cotacoes_preprocessadas.sqlite
+      - resultados/granger/granger.sqlite
+      - resultados/efeitos/domino/efeito_domino.sqlite
+      - --output-db
+      - resultados/modelagem/base_modelagem.sqlite
+      - --overwrite
+
   pipeline-completo:
     <<: *python-service
     profiles:
@@ -91,6 +108,8 @@ services:
       DOMINO_ALTA_MINIMA: ${DOMINO_ALTA_MINIMA:-0.05}
       DOMINO_PERCENTIL: ${DOMINO_PERCENTIL:-0.90}
       DOMINO_JANELA_DIAS: ${DOMINO_JANELA_DIAS:-5}
+      MODELAGEM_INICIO_VALIDACAO_1: ${MODELAGEM_INICIO_VALIDACAO_1:-2024-01-01}
+      MODELAGEM_INICIO_VALIDACAO_2: ${MODELAGEM_INICIO_VALIDACAO_2:-2025-01-01}
     command:
       - python
       - pipeline/executar_pipeline.py

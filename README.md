@@ -54,9 +54,23 @@ docker compose run --build --rm efeito-domino
 O processo gera `resultados/efeitos/domino/efeito_domino.sqlite` sem alterar os
 bancos anteriores.
 
+## Base de modelagem
+
+Com os três bancos derivados disponíveis, gere a base supervisionada e suas
+partições temporais:
+
+```bash
+docker compose run --build --rm base-modelagem
+```
+
+O processo gera `resultados/modelagem/base_modelagem.sqlite`, com os atributos
+históricos, as informações de auditoria e as divisões de treino, validação e
+teste final.
+
 ## Pipeline completo
 
-Para executar sequencialmente pré-processamento, Granger e Efeito Dominó:
+Para executar sequencialmente pré-processamento, Granger, Efeito Dominó e
+construção da base de modelagem:
 
 ```bash
 docker compose run --build --rm pipeline-completo

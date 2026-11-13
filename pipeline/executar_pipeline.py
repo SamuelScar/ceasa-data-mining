@@ -1,4 +1,4 @@
-"""Executa sequencialmente as etapas de preparação e caracterização dos dados."""
+"""Executa sequencialmente as etapas de preparação da base de modelagem."""
 
 from __future__ import annotations
 
@@ -52,6 +52,20 @@ ETAPAS = [
             "--overwrite",
         ],
     ),
+    Etapa(
+        nome="Base de modelagem",
+        descricao="atributos históricos e divisões temporais sem vazamento",
+        comando=[
+            sys.executable,
+            "modelagem/gerar_base_modelagem.py",
+            "resultados/preprocessamento/cotacoes_preprocessadas.sqlite",
+            "resultados/granger/granger.sqlite",
+            "resultados/efeitos/domino/efeito_domino.sqlite",
+            "--output-db",
+            "resultados/modelagem/base_modelagem.sqlite",
+            "--overwrite",
+        ],
+    ),
 ]
 
 
@@ -90,7 +104,11 @@ def exibir_estado(concluidas: int, inicio: float) -> None:
 def executar() -> int:
     inicio_total = perf_counter()
     print("Pipeline completo das cotações CEASA", flush=True)
-    print("Ordem: pré-processamento -> Granger -> Efeito Dominó", flush=True)
+    print(
+        "Ordem: pré-processamento -> Granger -> Efeito Dominó -> "
+        "Base de modelagem",
+        flush=True,
+    )
     exibir_estado(0, inicio_total)
 
     for indice, etapa in enumerate(ETAPAS, start=1):
