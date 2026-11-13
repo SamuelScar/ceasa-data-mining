@@ -103,9 +103,9 @@ capacidade preditiva no sentido de Granger, não uma demonstração isolada de
 causalidade econômica direta. Nas 62 relações significativas foram encontrados
 6.149 choques na origem; 4.815 puderam ser classificados e 1.881 apresentaram
 resposta no destino dentro da janela de cinco datas de segunda a sexta. O
-modelo preditivo ainda não foi treinado, mas foram definidos a construção da
-base supervisionada e o protocolo de validação temporal que orientarão essa
-próxima etapa.
+modelo preditivo ainda não foi treinado, mas foram implementados a construção
+da base supervisionada, o protocolo de validação temporal, a comparação dos
+classificadores e a avaliação final isolada que orientarão essa próxima etapa.
 
 \noindent\textbf{Palavras-chave:} CEASA; mineração de dados; séries temporais;
 pré-processamento; preços agrícolas; Efeito Dominó.
@@ -141,9 +141,10 @@ Diante disso, foi construído um fluxo rastreável que parte do banco produzido
 pelo \textit{crawler}, gera uma base pré-processada, organiza séries temporais,
 aplica o teste de Granger e caracteriza ocorrências de Efeito Dominó. O banco
 bruto não é modificado e cada etapa gera uma saída derivada auditável. Até o
-momento, não foi realizado o treinamento de um modelo preditivo: essa fase será
-conduzida a partir da base de eventos caracterizados e do protocolo temporal
-descrito neste relatório.
+momento, não foi realizado o treinamento de um modelo preditivo. Os programas
+que selecionam a configuração nas validações temporais e executam a avaliação
+final isolada já foram implementados, mas dependem da materialização da base de
+modelagem antes de serem executados.
 
 O uso do termo Efeito Dominó neste projeto é uma analogia à propagação
 sequencial descrita em outras áreas. Na segurança de processos, por exemplo,
@@ -921,6 +922,14 @@ e data do choque, identifica linhas que nasceram do mesmo movimento inicial,
 mas não as colapsa: cada destino continua representando uma pergunta preditiva
 distinta.
 
+A regra atual para o rótulo 0 exige ao menos uma cotação futura observada, mas
+não exige que todas as cinco datas da janela possuam cotação. Portanto, um
+negativo com cobertura parcial significa que a resposta não foi observada nos
+dias disponíveis, e não que sua ausência foi comprovada em cinco observações.
+Essa diferença é mantida no banco e será reavaliada antes da interpretação
+definitiva do treinamento; a implementação não remove nem converte esses casos
+silenciosamente.
+
 \subsubsection{Construção dos atributos}
 
 Os atributos são calculados separadamente para origem e destino e usam somente
@@ -1039,20 +1048,290 @@ permanecem no mesmo lado da fronteira temporal. O agrupamento é preservado como
 identificador para análises de dependência ou ponderação posteriores; a base
 atual não elimina destinos distintos associados ao mesmo choque.
 
-São criadas views específicas para
-\texttt{treino\_validacao\_1}, \texttt{validacao\_1},
-\texttt{treino\_validacao\_2}, \texttt{validacao\_2},
-\texttt{treino\_final} e \texttt{teste\_final}. Todas contêm apenas eventos
-classificáveis que passaram pela regra temporal correspondente.
+São criadas seis views específicas:
 
-Regressão Logística, Árvore de Decisão, Random Forest, Gradient Boosting e SVM
-serão comparados sob as mesmas divisões. A configuração de cada algoritmo será
-escolhida pelo F1 médio das duas validações; precisão, revocação, MCC, PR-AUC e
-matrizes de confusão serão registradas como medidas complementares. Depois da
-seleção, a configuração escolhida será treinada novamente com todos os eventos
-até 31 de outubro de 2025 e avaliada uma única vez entre 1º de novembro de 2025
-e 31 de outubro de 2026. O teste final não será usado para modificar atributos,
-hiperparâmetros ou limiar de classificação.
+\begin{itemize}
+    \item \texttt{treino\_validacao\_1} e \texttt{validacao\_1};
+    \item \texttt{treino\_validacao\_2} e \texttt{validacao\_2};
+    \item \texttt{treino\_final} e \texttt{teste\_final}.
+\end{itemize}
+
+Todas contêm apenas eventos classificáveis que passaram pela regra temporal
+correspondente.
+
+Essas views constituem o contrato entre a construção da base e o treinamento.
+O programa de seleção recebe somente as quatro views de desenvolvimento. As
+duas views finais são consumidas por outro programa, executado por um comando
+separado, para reduzir o risco de consulta acidental ao teste oficial.
+
+\subsection{Treinamento, seleção e avaliação final}
+
+\subsubsection{Escopo dos dados e separação das etapas}
+
+O treinamento consome exclusivamente
+\path{resultados/modelagem/base_modelagem.sqlite}. Nenhum banco de clima,
+câmbio, inflação, transporte ou outra fonte externa é integrado nesta versão.
+Essa restrição mantém a pergunta experimental alinhada ao banco já construído:
+verificar quanto os atributos históricos, a relação entre mercados e o choque
+observado explicam a propagação registrada.
+
+A implementação foi dividida em dois comandos:
+
+\begin{enumerate}
+    \item \texttt{validacao-modelos}, responsável por ajustar e comparar as
+    configurações somente nas duas divisões de desenvolvimento;
+    \item \texttt{avaliacao-final}, responsável por reajustar a configuração
+    escolhida em todo o treino final e somente depois consultar o teste oficial.
+\end{enumerate}
+
+Há também o orquestrador dedicado
+\texttt{pipeline-treinamento-avaliacao}, que chama esses dois comandos em ordem
+após uma invocação explícita. Ele não integra o \texttt{pipeline-completo}.
+Assim, recriar o pré-processamento, o Granger, os eventos ou a base de modelagem
+não abre automaticamente o período reservado. A separação é uma barreira
+operacional: o teste continua tecnicamente acessível ao comando final e ao
+orquestrador dedicado, mas deixa de fazer parte do ciclo repetido de
+desenvolvimento.
+
+\subsubsection{Validação da entrada}
+
+Antes de ajustar modelos, o programa exige uma execução de modelagem com
+status \texttt{concluida}, o catálogo de atributos e as quatro views de
+desenvolvimento. Cada view deve ser não vazia, possuir todas as colunas
+registradas, conter somente alvos 0 e 1, apresentar as duas classes e não ter
+identificadores de evento duplicados. Em cada divisão, a maior data do treino
+deve ser anterior à menor data da validação e nenhum identificador pode
+aparecer nos dois lados.
+
+Essas verificações não substituem a regra de construção das partições, mas
+impedem que uma base incompleta ou uma alteração acidental das views seja
+aceita silenciosamente pelo treinamento. O hash SHA-256 da base e o
+identificador de sua execução são registrados junto dos resultados.
+
+\subsubsection{Preparação dos atributos dentro de cada treino}
+
+O catálogo da base determina quais colunas podem entrar nos classificadores.
+Dos 81 preditores, oito são tratados como categóricos: produto, origem,
+destino, UF da origem, UF do destino, mês, trimestre e dia da semana. Mês,
+trimestre e dia da semana são categorias porque seus códigos não representam
+uma distância linear: dezembro não deve ser interpretado como doze vezes
+janeiro, por exemplo. Os 73 restantes seguem o fluxo numérico; entre eles, o
+ano permanece numérico para representar a progressão temporal.
+
+Para evitar vazamento, cada ajuste cria um novo pipeline e aprende as
+transformações somente com o treino daquela divisão. O procedimento é:
+
+\begin{itemize}
+    \item valores numéricos não interpretáveis ou infinitos são tratados como
+    ausentes;
+    \item cada atributo numérico ausente recebe a mediana calculada no treino;
+    quando a ausência aparece no treino, acrescenta-se um indicador binário
+    para que o modelo possa distinguir valor observado de valor imputado;
+    \item os atributos numéricos são padronizados pela média e pelo
+    desvio-padrão do treino;
+    \item categorias ausentes recebem uma categoria explícita de ausência;
+    \item as categorias são convertidas por codificação one-hot; categorias
+    inéditas na validação ou no teste são ignoradas, em vez de causar erro ou
+    provocar novo ajuste.
+\end{itemize}
+
+A mediana reduz a influência de valores extremos e a padronização coloca
+atributos com escalas diferentes em condição comparável, especialmente para
+Regressão Logística e SVM. Árvores não dependem da escala, mas usam a mesma
+representação para manter um fluxo uniforme. A baseline por relação é a única
+exceção: ela usa diretamente produto, origem e destino, pois sua finalidade é
+medir quanto se obtém apenas com a frequência histórica daquela relação.
+
+\subsubsection{Baselines, classificadores e configurações}
+
+A busca é deliberadamente pequena e determinística. O volume disponível é
+adequado para uma comparação inicial de modelos tabulares, mas não justifica
+redes neurais nem uma exploração extensa de hiperparâmetros. Ao todo são 25
+configurações, resumidas na Tabela~\ref{tab:configuracoes-treinamento}.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Configurações comparadas na seleção dos classificadores.}
+    \label{tab:configuracoes-treinamento}
+    \scriptsize
+    \begin{tabular}{p{3.4cm}p{6.0cm}p{5.3cm}}
+        \toprule
+        \textbf{Família} & \textbf{Configurações} & \textbf{Finalidade} \\
+        \midrule
+        Prevalência & Uma configuração com a proporção positiva do treino &
+        Referência mínima que não explora atributos. \\
+
+        Taxa histórica por relação & Suavização 5 e 20 &
+        Mede o poder preditivo da frequência histórica de
+        produto--origem--destino. \\
+
+        Regressão Logística & $C\in\{0{,}1;1;10\}$, com e sem pesos de classe &
+        Referência linear, probabilística e interpretável. \\
+
+        Árvore de Decisão & Profundidade 4 ou 8, mínimo de 10 amostras por
+        folha, com e sem pesos de classe &
+        Captura regras e interações não lineares com complexidade limitada. \\
+
+        Random Forest & 300 árvores, mínimo de 2 ou 5 amostras por folha,
+        $\sqrt{p}$ atributos por divisão de nó, com e sem pesos de classe &
+        Reduz a instabilidade de uma árvore e representa interações. \\
+
+        Gradient Boosting & 150 árvores, profundidade 2 e taxa 0,05 ou 0,10 &
+        Constrói correções sucessivas de baixa profundidade. \\
+
+        SVM com núcleo RBF & $C\in\{0{,}5;1;2\}$, com e sem pesos de classe &
+        Compara uma fronteira não linear baseada em distância. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+A baseline de prevalência devolve para todos os eventos a proporção positiva
+observada no treino. Na baseline histórica, para uma relação $r$, a
+probabilidade estimada é
+
+\begin{equation}
+    \widehat{p}_{r}=
+    \frac{s_{r}+\lambda\widehat{p}}{n_{r}+\lambda},
+\end{equation}
+
+em que $s_r$ é o número de positivos da relação, $n_r$ é sua quantidade de
+eventos, $\widehat{p}$ é a prevalência global do treino e
+$\lambda\in\{5,20\}$ controla a suavização. Relações não observadas no treino
+recebem a prevalência global. A suavização evita probabilidades extremas em
+relações com poucas observações.
+
+Nas configurações com pesos de classe, a classe menos frequente recebe peso
+inversamente proporcional à sua frequência. Não se aplica SMOTE nesta primeira
+comparação: a proporção positiva está próxima de 39\%, e criar eventos
+sintéticos poderia misturar relações, grupos de choque e dependências temporais
+que não correspondem a observações reais. Pesos de classe e ajuste do limiar
+permitem investigar o desequilíbrio sem fabricar novas linhas.
+
+Todos os modelos estocásticos usam a semente configurável
+\texttt{TREINAMENTO\_SEMENTE}, cujo valor padrão é 42. A semente torna as
+comparações reproduzíveis; ela não elimina a necessidade de registrar versões,
+dados e parâmetros.
+
+\subsubsection{Ajuste nas validações e escolha do limiar}
+
+Cada configuração é ajustada duas vezes, sempre do zero:
+
+\begin{enumerate}
+    \item treino em 2022--2023 e previsão probabilística em 2024;
+    \item treino em 2022--2024 e previsão probabilística entre janeiro e
+    outubro de 2025.
+\end{enumerate}
+
+Não há embaralhamento dos eventos nem validação aleatória. Para cada
+configuração, um único limiar é escolhido para as duas validações entre os
+valores 0,05 e 0,95, em passos de 0,05. Em cada limiar calcula-se o F1
+separadamente nas duas divisões e usa-se a média. O maior F1 médio vence; em
+caso de igualdade, o desempate usa, nesta ordem, MCC médio, precisão média e
+proximidade de 0,50. Esse limiar é então usado para registrar todas as métricas
+da configuração.
+
+Depois que cada configuração possui seu melhor limiar, a escolha do modelo
+usa o maior F1 médio. Empates são resolvidos pela maior PR-AUC média, pelo maior
+MCC médio e, por fim, pela ordem fixa do catálogo de configurações. O último
+critério não expressa superioridade metodológica; apenas garante que uma
+igualdade exata produza sempre o mesmo resultado.
+
+O F1 da classe positiva é o critério principal porque combina precisão e
+revocação:
+
+\begin{equation}
+    F1=2\frac{\mathrm{precisao}\times\mathrm{revocacao}}
+    {\mathrm{precisao}+\mathrm{revocacao}}.
+\end{equation}
+
+Assim, não basta prever muitos positivos nem obter acurácia elevada pela classe
+mais frequente. A PR-AUC complementa o F1 avaliando a ordenação probabilística
+ao longo de vários limiares, enquanto o MCC resume os quatro quadrantes da
+matriz de confusão e penaliza soluções degeneradas.
+
+\subsubsection{Métricas e dependência entre eventos}
+
+Para cada configuração e validação são armazenados F1, precisão, revocação,
+acurácia, acurácia balanceada, MCC, PR-AUC, ROC-AUC, erro de Brier e as quatro
+contagens da matriz de confusão. A acurácia balanceada dá o mesmo peso à taxa
+de acerto de cada classe; o Brier mede o erro quadrático das probabilidades e,
+portanto, ajuda a distinguir classificação correta de probabilidade bem
+calibrada.
+
+Como vários destinos podem nascer do mesmo choque na origem, também é feita
+uma análise de sensibilidade por \texttt{grupo\_choque}. Se um grupo $g$
+possui $n_g$ linhas, cada uma recebe peso
+
+\begin{equation}
+    w_i=\frac{1}{n_g}.
+\end{equation}
+
+Desse modo, todo grupo soma peso 1, independentemente da quantidade de destinos
+associados. F1, precisão, revocação e acurácia são recalculados com esses pesos.
+Essas medidas são complementares: não alteram o ajuste, o limiar nem a escolha
+principal do modelo, mas mostram se grupos com muitos destinos estão dominando
+o resultado convencional por linha.
+
+\subsubsection{Saídas e rastreabilidade da seleção}
+
+A seleção grava \path{resultados/treinamento/validacao.sqlite}. O banco contém:
+
+\begin{itemize}
+    \item identificação da execução, hash e caminho da base, semente, critério
+    de seleção e a declaração de que o teste final não foi consultado;
+    \item catálogo das 25 configurações e indicação da selecionada;
+    \item limiar e resumo médio de cada configuração;
+    \item métricas por configuração e divisão;
+    \item probabilidade, previsão, alvo, data e grupo de cada evento validado.
+\end{itemize}
+
+Também é criado
+\path{resultados/treinamento/configuracao_selecionada.json}, que registra o
+hash e a execução da base, a lista e a assinatura dos atributos, a semente, as
+quatro views consultadas, o modelo, os hiperparâmetros, o limiar e o resumo das
+validações. O JSON é o contrato consumido pela avaliação final. As saídas da
+seleção são escritas primeiro em arquivos temporários e somente substituem os
+destinos depois da validação de integridade do SQLite. Como a seleção pertence
+ao desenvolvimento, o serviço permite sua reconstrução explícita.
+
+\subsubsection{Ajuste e avaliação final isolada}
+
+Antes da avaliação oficial, o segundo programa verifica se o JSON corresponde
+ao formato esperado, se declara não ter consultado o teste e se lista
+exatamente as quatro views de desenvolvimento. O código, a família e os
+hiperparâmetros devem coincidir com uma das configurações implementadas. Em
+seguida, são comparados com a base atual o hash SHA-256, o identificador da
+execução, a lista de atributos e sua assinatura.
+
+Somente após essas verificações a configuração escolhida é ajustada em
+\texttt{treino\_final}, que contém o desenvolvimento disponível até 31 de
+outubro de 2025. O programa conclui esse ajuste antes de ler
+\texttt{teste\_final}. A ordem temporal e a ausência de identificadores
+compartilhados são verificadas novamente. O modelo, os hiperparâmetros, o
+pré-processamento e o limiar permanecem fixos durante a avaliação entre 1º de
+novembro de 2025 e 31 de outubro de 2026.
+
+A avaliação produz
+\path{resultados/treinamento/avaliacao_final.sqlite}, com métricas, previsões e
+importâncias absolutas quando o estimador fornece coeficientes ou importância
+de atributos. Também serializa o pipeline ajustado em
+\path{resultados/treinamento/modelo_final.pkl}, acompanhado pelos hashes, pela
+configuração e pela versão do scikit-learn. O formato serializado deve ser
+reaberto no mesmo ambiente de dependências ou em ambiente compatível.
+
+Por padrão, a avaliação final recusa sobrescrever tanto o banco quanto o modelo
+serializado. O serviço do Docker Compose não ativa a opção de sobrescrita.
+Essa proteção reduz repetições acidentais, embora uma repetição consciente
+continue possível por opção explícita ou por outro caminho de saída. O hash do
+JSON efetivamente usado é registrado para permitir auditoria posterior.
+
+O pipeline dedicado antecipa essa verificação: antes de refazer a validação,
+ele recusa iniciar se o banco da avaliação final ou o modelo serializado já
+existir. Desse modo, não substitui os resultados de desenvolvimento para somente
+depois descobrir que a etapa oficial está protegida. Quando não há artefatos
+finais, ele refaz a seleção e só abre o teste se essa primeira etapa terminar
+com sucesso. Por prosseguir diretamente até o teste oficial, esse orquestrador
+deve ser invocado apenas quando a metodologia e a seleção estiverem encerradas.
 
 % ==========================================
 % RESULTADOS
@@ -1133,6 +1412,14 @@ Todas as 62 relações apresentaram ao menos um evento classificável e uma
 confirmação. Entre as confirmações, 610 ocorreram na primeira data de segunda a
 sexta posterior ao choque e 449 na segunda.
 
+Entre os 2.934 rótulos negativos, 908 possuem menos de cinco cotações futuras
+observadas no destino. Esses registros não estão comprovadamente errados: eles
+seguem a regra atual, segundo a qual ao menos uma observação futura sem resposta
+já permite o rótulo 0. Entretanto, representam negativos com evidência mais
+fraca do que uma janela completamente observada. A base de treinamento os
+preserva, e a exigência de cobertura completa será decidida antes da execução
+definitiva ou tratada em análise de sensibilidade específica.
+
 \subsection{Distribuição temporal para a modelagem}
 
 A Tabela~\ref{tab:divisoes-modelagem} apresenta a quantidade de eventos
@@ -1211,8 +1498,9 @@ produto, destino e data de resposta, totalizando 647 registros adicionais. A
 base preserva cada destino como uma observação distinta e registra o
 \texttt{grupo\_choque} para identificar eventos que compartilham produto,
 origem e data. A separação temporal impede que o mesmo grupo atravesse treino e
-avaliação, mas ainda será necessário verificar, durante o treinamento, se
-ponderação por grupo ou análise de sensibilidade altera as métricas.
+avaliação. A implementação do treinamento já calcula métricas complementares
+nas quais cada grupo possui o mesmo peso total; o efeito dessa ponderação sobre
+as conclusões somente poderá ser examinado depois da execução.
 
 \subsection{Limitações e próxima etapa}
 
@@ -1242,12 +1530,13 @@ a 31 de outubro de 2025 foi usado para definir a rede, os limites, os atributos
 ou o modelo que será avaliado entre novembro de 2025 e outubro de 2026.
 
 Até esta etapa, foram concluídos o pré-processamento, a construção das séries,
-o teste de Granger e a caracterização dos eventos. O script de construção da
-base de modelagem e de suas partições temporais também foi implementado, mas o
-banco ainda precisa ser materializado e validado com os artefatos atuais. O
-modelo preditivo ainda não foi treinado. Após essa execução, as contagens
-pós-purga deverão substituir as quantidades brutas apresentadas na
-Tabela~\ref{tab:divisoes-modelagem}.
+o teste de Granger e a caracterização dos eventos. Os scripts de construção da
+base, seleção dos classificadores e avaliação final também foram implementados.
+Entretanto, a base de modelagem ainda precisa ser materializada com os
+artefatos atuais, e nenhum modelo foi treinado nem avaliado. Após essa execução,
+as contagens pós-purga deverão substituir as quantidades brutas apresentadas na
+Tabela~\ref{tab:divisoes-modelagem}; somente então serão acrescentados os
+resultados comparativos e a avaliação oficial.
 
 \clearpage
 \printbibliography[heading=bibintoc,title={Referências}]

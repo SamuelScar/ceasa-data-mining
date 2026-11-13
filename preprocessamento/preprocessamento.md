@@ -5,6 +5,9 @@ O pré-processamento lê `data/cotacoes.sqlite` sem alterá-lo e gera
 cotações consolidadas, os preços tratados e os indicadores de qualidade
 necessários para as etapas posteriores do trabalho.
 
+Este arquivo é um apoio operacional. A descrição metodológica principal está
+no relatório do projeto.
+
 ## Execução
 
 Na raiz do repositório:
@@ -96,20 +99,19 @@ as contagens de consolidação e exclusão e a consistência dos marcadores.
 ## Situação atual
 
 O pré-processamento da base atual está concluído. Na execução validada mais
-recente, 2.380.608 cotações da origem resultaram em 2.372.920 identidades
-consolidadas. Foram excluídos da tabela final 87.820 registros sem mapeamento
-suficiente: 87.805 sem unidade, 14 sem quantidade exata e 1 ambíguo. Todas
+recente, 2.388.035 cotações da origem resultaram em 2.380.218 identidades
+consolidadas. Foram excluídos da tabela final 85.124 registros sem mapeamento
+suficiente: 85.107 sem unidade, 16 sem quantidade exata e 1 ambíguo. Todas
 essas linhas permanecem disponíveis em `cotacoes_excluidas_mapeamento` para
 auditoria.
 
-O banco derivado contém 2.285.100 cotações, das quais 2.081.125 atendem aos
+O banco derivado contém 2.295.094 cotações, das quais 2.091.042 atendem aos
 critérios da camada analítica. A visão `cotacoes_analiticas_principais` possui
-2.080.417 registros após desconsiderar os 708 outliers sinalizados. As 315.257
+2.090.331 registros após desconsiderar os 711 outliers sinalizados. As 316.087
 conversões incertas foram preservadas com seus marcadores e somente devem ser
 usadas em comparações compatíveis com as unidades disponíveis.
 
-Foram registradas 69 regras de conversão candidatas. Dessas, 49 atendem aos
-critérios estruturais, mas nenhuma foi aplicada porque a data limite de treino
-não foi informada. Essa data é um parâmetro de execução a ser escolhido junto
-com os períodos de treino e validação, e não uma pendência do
-pré-processamento atual. Não existe etapa de revisão manual pendente.
+Foram registradas 24 regras de conversão inferida. A execução utilizou
+31 de outubro de 2025 como data limite: 13 regras atenderam aos critérios e
+foram aplicadas, enquanto 11 permaneceram como candidatas. Essas regras
+aplicadas resultaram em 3.250 conversões de alta confiança no banco derivado.

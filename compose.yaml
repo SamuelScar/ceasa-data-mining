@@ -92,6 +92,49 @@ services:
       - resultados/modelagem/base_modelagem.sqlite
       - --overwrite
 
+  validacao-modelos:
+    <<: *python-service
+    profiles:
+      - tarefas
+    environment:
+      TREINAMENTO_SEMENTE: ${TREINAMENTO_SEMENTE:-42}
+    command:
+      - python
+      - -m
+      - treinamento.executar_validacao
+      - resultados/modelagem/base_modelagem.sqlite
+      - --output-db
+      - resultados/treinamento/validacao.sqlite
+      - --selection-json
+      - resultados/treinamento/configuracao_selecionada.json
+      - --overwrite
+
+  avaliacao-final:
+    <<: *python-service
+    profiles:
+      - tarefas
+    command:
+      - python
+      - -m
+      - treinamento.executar_avaliacao_final
+      - resultados/modelagem/base_modelagem.sqlite
+      - resultados/treinamento/configuracao_selecionada.json
+      - --output-db
+      - resultados/treinamento/avaliacao_final.sqlite
+      - --model-output
+      - resultados/treinamento/modelo_final.pkl
+
+  pipeline-treinamento-avaliacao:
+    <<: *python-service
+    profiles:
+      - tarefas
+    environment:
+      TREINAMENTO_SEMENTE: ${TREINAMENTO_SEMENTE:-42}
+    command:
+      - python
+      - -m
+      - treinamento.executar_pipeline_avaliacao
+
   pipeline-completo:
     <<: *python-service
     profiles:
