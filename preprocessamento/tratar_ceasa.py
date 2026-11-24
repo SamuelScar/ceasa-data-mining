@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 MARKET_UNIT = "entreposto"
 MASS_UNITS = {"kg": 1.0, "g": 0.001}
 VOLUME_UNITS = {"l": 1.0, "ml": 0.001}
@@ -1114,7 +1114,7 @@ def construir_regras_inferencia(
     args: argparse.Namespace,
 ) -> pd.DataFrame:
     """Descobre regras por produto e apresentação usando somente o treino."""
-    limite_informado = args.data_limite_inferencia
+    limite_informado = args.data_corte_treino
     limite_analise = limite_informado or source.execute(
         "SELECT MAX(data_cotacao) FROM cotacoes"
     ).fetchone()[0]
@@ -1287,7 +1287,7 @@ def construir_regras_inferencia(
         if row.pesos_ancora_distintos != 1:
             reasons.append("pesos_ancora_conflitantes")
         if limite_informado is None:
-            reasons.append("data_limite_treino_nao_definida")
+            reasons.append("data_corte_treino_nao_definida")
         records.append(
             {
                 "id": rule_id,
@@ -1866,6 +1866,7 @@ def inserir_cotacoes(
 
 def marcar_outliers(
     connection: sqlite3.Connection,
+    data_corte_treino: str | None,
     low: float,
     high: float,
     minimum_group: int,
@@ -1877,6 +1878,7 @@ def marcar_outliers(
         """
         SELECT
             cotacao_id,
+            data_cotacao,
             produto_id,
             entreposto_id,
             apresentacao_unidade_id,
@@ -1890,10 +1892,34 @@ def marcar_outliers(
     if comparable.empty:
         return 0
 
+    comparable["data_cotacao"] = pd.to_datetime(
+        comparable["data_cotacao"],
+        errors="raise",
+    )
+    referencia = comparable
+    if data_corte_treino is not None:
+        corte = pd.Timestamp(data_corte_treino)
+        referencia = comparable.loc[comparable["data_cotacao"] <= corte].copy()
+    if referencia.empty:
+        raise ValueError(
+            "não existem cotações comparáveis até o corte de treino usado "
+            "para aprender as referências dos outliers"
+        )
+
     keys = ["produto_id", "entreposto_id", "apresentacao_unidade_id"]
-    grouped = comparable.groupby(keys, dropna=False)["preco_comum_kg"]
-    comparable["mediana_grupo"] = grouped.transform("median")
-    comparable["tamanho_grupo"] = grouped.transform("size")
+    estatisticas = (
+        referencia.groupby(keys, dropna=False, as_index=False)
+        .agg(
+            mediana_grupo=("preco_comum_kg", "median"),
+            tamanho_grupo=("preco_comum_kg", "size"),
+        )
+    )
+    comparable = comparable.merge(
+        estatisticas,
+        on=keys,
+        how="left",
+        validate="many_to_one",
+    )
     comparable["razao_mediana"] = (
         comparable["preco_comum_kg"]
         / comparable["mediana_grupo"].replace(0, np.nan)
@@ -1908,9 +1934,37 @@ def marcar_outliers(
     if flagged.empty:
         return 0
 
-    flagged["outliers_no_grupo"] = flagged.groupby(keys, dropna=False)[
-        "cotacao_id"
-    ].transform("size")
+    referencia = referencia.merge(
+        estatisticas,
+        on=keys,
+        how="left",
+        validate="many_to_one",
+    )
+    referencia["razao_mediana"] = (
+        referencia["preco_comum_kg"]
+        / referencia["mediana_grupo"].replace(0, np.nan)
+    )
+    suspeitos_referencia = referencia[
+        referencia["tamanho_grupo"].ge(minimum_group)
+        & (
+            referencia["razao_mediana"].lt(low)
+            | referencia["razao_mediana"].gt(high)
+        )
+    ]
+    recorrencia = (
+        suspeitos_referencia.groupby(keys, dropna=False, as_index=False)
+        .agg(outliers_no_grupo=("cotacao_id", "size"))
+    )
+    flagged = flagged.merge(
+        recorrencia,
+        on=keys,
+        how="left",
+        validate="many_to_one",
+    )
+    flagged["tamanho_grupo"] = flagged["tamanho_grupo"].astype(int)
+    flagged["outliers_no_grupo"] = (
+        flagged["outliers_no_grupo"].fillna(0).astype(int)
+    )
     price_is_cent = np.isclose(
         flagged["preco_comum_consolidado"],
         0.01,
@@ -1921,7 +1975,9 @@ def marcar_outliers(
         "razao_mediana"
     ].gt(probable_high)
     recurrent_group = flagged["outliers_no_grupo"].ge(recurrent_minimum)
-    flagged["metodo"] = "razao_mediana_produto_entreposto_apresentacao"
+    flagged["metodo"] = (
+        "razao_mediana_treino_produto_entreposto_apresentacao"
+    )
     flagged["classificacao"] = np.select(
         [price_is_cent | extreme_ratio, recurrent_group],
         ["erro_provavel", "inconsistencia_recorrente"],
@@ -1936,7 +1992,7 @@ def marcar_outliers(
         [
             "Preço comum consolidado igual a R$ 0,01.",
             "Razão em relação à mediana ultrapassa o limite de erro provável.",
-            "Ocorrência recorrente no mesmo produto, entreposto e apresentação; possível inconsistência no denominador do preço.",
+            "Ocorrência recorrente no período de treino para o mesmo produto, entreposto e apresentação; possível inconsistência no denominador do preço.",
         ],
         default="Ocorrência extrema isolada ou pouco recorrente, desconsiderada da análise principal.",
     )
@@ -2501,7 +2557,14 @@ def construir_banco(args: argparse.Namespace) -> Path:
         "outlier_probable_low": args.outlier_probable_low,
         "outlier_probable_high": args.outlier_probable_high,
         "outlier_recurrent_min": args.outlier_recurrent_min,
-        "data_limite_inferencia": args.data_limite_inferencia,
+        "data_corte_treino": args.data_corte_treino,
+        # Mantido para compatibilidade com bancos e consumidores anteriores.
+        "data_limite_inferencia": args.data_corte_treino,
+        "referencia_outliers": (
+            "treino_ate_data_corte"
+            if args.data_corte_treino is not None
+            else "base_completa_exploratoria"
+        ),
         "inferencia_min_suporte": args.inferencia_min_suporte,
         "inferencia_min_datas": args.inferencia_min_datas,
     }
@@ -2599,6 +2662,7 @@ def construir_banco(args: argparse.Namespace) -> Path:
 
         outliers = marcar_outliers(
             target,
+            data_corte_treino=args.data_corte_treino,
             low=args.outlier_low,
             high=args.outlier_high,
             minimum_group=args.outlier_min_group,
@@ -2700,12 +2764,12 @@ def validar_argumentos(args: argparse.Namespace) -> None:
         )
     if args.outlier_recurrent_min < 2:
         raise ValueError("--outlier-recurrent-min deve ser pelo menos dois.")
-    if args.data_limite_inferencia:
+    if args.data_corte_treino:
         try:
-            datetime.strptime(args.data_limite_inferencia, "%Y-%m-%d")
+            datetime.strptime(args.data_corte_treino, "%Y-%m-%d")
         except ValueError as error:
             raise ValueError(
-                "--data-limite-inferencia deve usar o formato AAAA-MM-DD."
+                "--data-corte-treino deve usar o formato AAAA-MM-DD."
             ) from error
     if args.inferencia_min_suporte < 1:
         raise ValueError("--inferencia-min-suporte deve ser pelo menos um.")
@@ -2750,11 +2814,18 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_OUTLIER_RECURRENT_MIN,
     )
     parser.add_argument(
+        "--data-corte-treino",
         "--data-limite-inferencia",
-        default=os.getenv("CEASA_DATA_LIMITE_INFERENCIA") or None,
+        dest="data_corte_treino",
+        default=(
+            os.getenv("CEASA_DATA_CORTE_TREINO")
+            or os.getenv("CEASA_DATA_LIMITE_INFERENCIA")
+            or None
+        ),
         help=(
-            "último dia do período de treino usado para inferir conversões; "
-            "sem ele as regras ficam apenas como candidatas"
+            "último dia do período usado para inferir conversões e aprender "
+            "as referências dos outliers; sem ele as regras inferidas ficam "
+            "apenas como candidatas e os outliers usam a base completa"
         ),
     )
     parser.add_argument(

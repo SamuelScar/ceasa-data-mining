@@ -236,12 +236,20 @@ def validar_banco_preprocessado(
         raise ValueError("o pré-processamento não possui execução concluída")
 
     parametros = json.loads(row["parametros_json"])
-    limite = parametros.get("data_limite_inferencia")
+    limite = parametros.get("data_corte_treino")
+    if limite is None:
+        limite = parametros.get("data_limite_inferencia")
     esperado = data_corte_treino.isoformat()
     if limite != esperado:
         raise ValueError(
-            "o limite de inferência do pré-processamento deve coincidir com "
+            "o corte de treino do pré-processamento deve coincidir com "
             f"o corte de treino: esperado {esperado}, encontrado {limite!r}"
+        )
+    if parametros.get("referencia_outliers") != "treino_ate_data_corte":
+        raise ValueError(
+            "o pré-processamento não possui referências de outliers aprendidas "
+            "somente até o corte de treino; refaça essa etapa com "
+            "CEASA_DATA_CORTE_TREINO definido"
         )
 
     banco_origem = Path(row["banco_origem"])

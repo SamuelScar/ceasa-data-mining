@@ -35,9 +35,11 @@ from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ALVO = "efeito_domino"
 COLUNA_GRUPO = "grupo_choque"
+COLUNA_COBERTURA = "dias_observados_destino"
+COBERTURAS_MINIMAS_NEGATIVO = (1, 2, 3, 4, 5)
 COLUNAS_CALENDARIO_CATEGORICAS = {"mes", "trimestre", "dia_semana"}
 VISOES_VALIDACAO = (
     "treino_validacao_1",
@@ -46,6 +48,11 @@ VISOES_VALIDACAO = (
     "validacao_2",
 )
 VISOES_FINAIS = ("treino_final", "teste_final")
+VISOES_POR_CONTEXTO = {
+    "validacao_1": ("treino_validacao_1", "validacao_1"),
+    "validacao_2": ("treino_validacao_2", "validacao_2"),
+    "final": VISOES_FINAIS,
+}
 
 
 @dataclass(frozen=True)
@@ -134,6 +141,7 @@ def abrir_base_somente_leitura(path: Path) -> sqlite3.Connection:
 def validar_base(
     connection: sqlite3.Connection,
     visoes_obrigatorias: tuple[str, ...],
+    contexto_esperado: str | None = None,
 ) -> dict[str, Any]:
     objetos = {
         (str(linha[0]), str(linha[1]))
@@ -143,7 +151,11 @@ def validar_base(
     }
     tabelas = {nome for nome, tipo in objetos if tipo == "table"}
     visoes = {nome for nome, tipo in objetos if tipo == "view"}
-    tabelas_necessarias = {"execucoes_modelagem", "catalogo_atributos"}
+    tabelas_necessarias = {
+        "execucoes_modelagem",
+        "catalogo_atributos",
+        "auditoria_eventos",
+    }
     ausentes = tabelas_necessarias - tabelas
     if ausentes:
         raise ValueError(
@@ -161,7 +173,20 @@ def validar_base(
     ).fetchone()
     if execucao is None or execucao["status"] != "concluida":
         raise ValueError("a base não possui uma execução de modelagem concluída")
-    return dict(execucao)
+    resultado = dict(execucao)
+    if contexto_esperado is not None:
+        if int(resultado.get("schema_version", 0)) != SCHEMA_VERSION:
+            raise ValueError("versão incompatível da base de modelagem contextual")
+        contexto = resultado.get("contexto")
+        if contexto != contexto_esperado:
+            raise ValueError(
+                f"a base deveria representar {contexto_esperado}, "
+                f"mas registra {contexto!r}"
+            )
+        assinatura = str(resultado.get("metodologia_sha256") or "")
+        if len(assinatura) != 64:
+            raise ValueError("a base não registra uma assinatura metodológica válida")
+    return resultado
 
 
 def carregar_atributos(connection: sqlite3.Connection) -> AtributosModelo:
@@ -208,13 +233,22 @@ def carregar_visao(
     permitidas = set(VISOES_VALIDACAO) | set(VISOES_FINAIS)
     if nome not in permitidas:
         raise ValueError(f"visão de modelagem não permitida: {nome}")
-    frame = pd.read_sql_query(f'SELECT * FROM "{nome}" ORDER BY id', connection)
+    frame = pd.read_sql_query(
+        f"""
+        SELECT v.*, a.dias_observados_destino
+        FROM "{nome}" v
+        JOIN auditoria_eventos a ON a.id = v.id
+        ORDER BY v.id
+        """,
+        connection,
+    )
     if frame.empty:
         raise ValueError(f"a visão {nome} está vazia")
     obrigatorias = {
         "id",
         "data_choque",
         COLUNA_GRUPO,
+        COLUNA_COBERTURA,
         ALVO,
         *atributos.todos,
     }
@@ -230,6 +264,18 @@ def carregar_visao(
         raise ValueError(f"a visão {nome} contém rótulos inválidos")
     if len(alvos) != 2:
         raise ValueError(f"a visão {nome} precisa conter as duas classes")
+    cobertura = pd.to_numeric(frame[COLUNA_COBERTURA], errors="coerce")
+    cobertura_valida = (
+        cobertura.notna()
+        & (cobertura == np.floor(cobertura))
+        & cobertura.between(
+            min(COBERTURAS_MINIMAS_NEGATIVO),
+            max(COBERTURAS_MINIMAS_NEGATIVO),
+        )
+    )
+    if not cobertura_valida.all():
+        raise ValueError(f"a visão {nome} contém cobertura futura inválida")
+    frame[COLUNA_COBERTURA] = cobertura.astype(int)
     return frame
 
 
@@ -485,6 +531,62 @@ def calcular_metricas(
             }
         )
     return metricas
+
+
+def calcular_sensibilidade_cobertura(
+    previsoes: pd.DataFrame,
+    limiar: float,
+) -> list[dict[str, Any]]:
+    obrigatorias = {
+        ALVO,
+        COLUNA_GRUPO,
+        COLUNA_COBERTURA,
+        "probabilidade",
+    }
+    ausentes = obrigatorias - set(previsoes.columns)
+    if ausentes:
+        raise ValueError(
+            "previsões sem colunas para a sensibilidade de cobertura: "
+            + ", ".join(sorted(ausentes))
+        )
+
+    resultados: list[dict[str, Any]] = []
+    for cobertura_minima in COBERTURAS_MINIMAS_NEGATIVO:
+        mascara = (previsoes[ALVO] == 1) | (
+            (previsoes[ALVO] == 0)
+            & (previsoes[COLUNA_COBERTURA] >= cobertura_minima)
+        )
+        cenario = previsoes.loc[mascara]
+        contagens = cenario[ALVO].value_counts().to_dict()
+        positivos = int(contagens.get(1, 0))
+        negativos = int(contagens.get(0, 0))
+        avaliavel = positivos > 0 and negativos > 0
+        motivo_nao_avaliavel = None
+        if not avaliavel:
+            motivo_nao_avaliavel = (
+                "cenário sem as duas classes após o filtro de cobertura"
+            )
+        resultados.append(
+            {
+                "cobertura_minima_negativo": cobertura_minima,
+                "linhas_avaliadas": int(len(cenario)),
+                "positivos": positivos,
+                "negativos": negativos,
+                "avaliavel": avaliavel,
+                "motivo_nao_avaliavel": motivo_nao_avaliavel,
+                "metricas": (
+                    calcular_metricas(
+                        cenario[ALVO],
+                        cenario["probabilidade"].to_numpy(),
+                        limiar,
+                        cenario[COLUNA_GRUPO],
+                    )
+                    if avaliavel
+                    else {}
+                ),
+            }
+        )
+    return resultados
 
 
 def selecionar_limiar(

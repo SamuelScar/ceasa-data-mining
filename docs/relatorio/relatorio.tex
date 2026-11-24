@@ -491,8 +491,8 @@ foi informada.
 Os preços não são utilizados para escolher o peso inferido. Essa decisão evita
 aproximar artificialmente os preços entre CEASAs e produzir o padrão de
 propagação que a pesquisa pretende investigar. Para impedir que informações
-futuras participem da criação das regras, a data limite de inferência foi
-fixada em 31 de outubro de 2025, a mesma data de corte do conjunto de treino.
+futuras participem da criação das regras, o corte temporal do pré-processamento
+foi fixado em 31 de outubro de 2025, a mesma data de corte do conjunto de treino.
 Somente registros com entreposto definido e preço comum positivo contam como
 suporte, mas o valor desse preço não participa da escolha do peso.
 Na execução documentada, 13 regras foram aplicadas a 3.250 cotações; outras 11 regras
@@ -527,17 +527,20 @@ Essa decisão evita trocar ou ordenar automaticamente valores cuja coluna
 incorreta não pode ser determinada.
 
 Os possíveis \textit{outliers} são identificados dentro de grupos com o mesmo
-produto, entreposto e apresentação. Com pelo menos cinco observações, preços
-por kg inferiores a 0,1 vez ou superiores a 10 vezes a mediana do grupo são
-sinalizados. Preço comum igual a R\$~0,01 ou razão inferior a 0,01 ou superior
-a 20 recebe a classificação \texttt{erro\_provavel}. Entre os demais casos,
-grupos com pelo menos cinco ocorrências suspeitas recebem
-\texttt{inconsistencia\_recorrente}; os restantes são classificados como
-\texttt{extremo\_isolado}.
+produto, entreposto e apresentação. A mediana, o tamanho do grupo e a
+recorrência são aprendidos somente com observações até o corte temporal do
+treino. Essa referência é congelada e aplicada às cotações posteriores. Com
+pelo menos cinco observações no treino, preços por kg inferiores a 0,1 vez ou
+superiores a 10 vezes a mediana do grupo são sinalizados. Preço comum igual a
+R\$~0,01 ou razão inferior a 0,01 ou superior a 20 recebe a classificação
+\texttt{erro\_provavel}. Entre os demais casos, grupos com pelo menos cinco
+ocorrências suspeitas no treino recebem \texttt{inconsistencia\_recorrente}; os
+restantes são classificados como \texttt{extremo\_isolado}.
 
 Entre os 711 casos sinalizados na execução documentada, 175 foram classificados
 como erro provável, 441 como inconsistência recorrente e 95 como extremo
-isolado.
+isolado. Essas contagens pertencem à execução de referência anterior à
+temporalização das estatísticas de outliers e deverão ser recalculadas.
 
 Os valores sinalizados não são apagados nem corrigidos. Eles permanecem na
 tabela principal e nas visões de auditoria, mas ficam fora de
@@ -620,8 +623,9 @@ O período até 31 de outubro de 2025 foi destinado à construção e ao diagnó
 das séries; o intervalo posterior foi preservado para avaliações futuras.
 
 Antes dessa seleção, o programa exige que o banco pré-processado tenha uma
-execução concluída e que o limite temporal usado para inferir pesos seja igual
-ao fim do treino. Quando a origem bruta ainda está disponível, ela também não
+execução concluída e que o corte temporal usado nas conversões inferidas e nas
+referências de outliers seja igual ao fim do treino. Quando a origem bruta ainda
+está disponível, ela também não
 pode ser mais recente que o banco derivado. A etapa é interrompida se um dos
 sete mercados estiver ausente ou associado a mais de uma CEASA ou UF. Essas
 regras impedem a combinação de dados novos com conversões antigas, o uso de
@@ -871,7 +875,7 @@ A caracterização foi gravada em
 \path{resultados/efeitos/domino/efeito_domino.sqlite}, sem modificar os bancos
 anteriores. A execução pode ser feita isoladamente ou pelo pipeline completo,
 que executa pré-processamento, Granger, caracterização e construção da base de
-modelagem em sequência.
+modelagem em sequência para cada contexto de desenvolvimento.
 
 O banco registra o caminho e o hash SHA-256 do banco de Granger, o identificador
 da execução de origem, as relações recebidas e os parâmetros usados. Antes de
@@ -883,14 +887,21 @@ classificáveis, confirmações e não confirmações, além de exigir que todo 
 
 \subsection{Construção da base de modelagem}
 
-A nova etapa foi implementada para produzir o quarto banco derivado,
-\path{resultados/modelagem/base_modelagem.sqlite}, destinado ao treinamento e à
-avaliação dos classificadores. O script recebe os bancos pré-processado, de
-Granger e do Efeito Dominó. Antes de construir qualquer linha, verifica se as
-três execuções estão concluídas, calcula seus hashes SHA-256 e confere a cadeia
-de procedência: o hash do pré-processamento deve ser o registrado pelo Granger,
-e o hash do Granger deve ser o registrado pelo Efeito Dominó. Os identificadores
-das execuções também devem coincidir.
+A nova etapa produz uma base derivada por contexto temporal, destinada ao
+treinamento e à avaliação dos classificadores. Cada execução recebe uma cadeia
+própria de pré-processamento, Granger e Efeito Dominó e declara se representa
+\texttt{validacao\_1}, \texttt{validacao\_2} ou \texttt{final}. Antes de
+construir qualquer linha, verifica se as três execuções estão concluídas,
+calcula seus hashes SHA-256 e confere a cadeia de procedência: o hash do
+pré-processamento deve ser o registrado pelo Granger, e o hash do Granger deve
+ser o registrado pelo Efeito Dominó. Os identificadores das execuções também
+devem coincidir.
+
+O contexto é aceito somente quando o início das séries, o corte do treino e o
+fim da avaliação coincidem com as fronteiras metodológicas fixadas. O banco
+registra ainda uma assinatura calculada a partir dos parâmetros das três
+etapas, das regras dos atributos e do catálogo completo. Assim, bases de
+períodos diferentes podem ser comparadas sem exigir arquivos idênticos.
 
 O banco pré-processado participa como origem indireta e como elemento de
 rastreabilidade. Suas cotações individuais não são juntadas novamente aos
@@ -926,9 +937,13 @@ A regra atual para o rótulo 0 exige ao menos uma cotação futura observada, ma
 não exige que todas as cinco datas da janela possuam cotação. Portanto, um
 negativo com cobertura parcial significa que a resposta não foi observada nos
 dias disponíveis, e não que sua ausência foi comprovada em cinco observações.
-Essa diferença é mantida no banco e será reavaliada antes da interpretação
-definitiva do treinamento; a implementação não remove nem converte esses casos
-silenciosamente.
+Essa diferença é mantida no banco e examinada por uma análise de sensibilidade:
+as métricas são recalculadas exigindo dos negativos cobertura mínima de uma,
+duas, três, quatro e cinco observações futuras. Todos os positivos confirmados
+são mantidos. O cenário de uma observação permanece como resultado principal;
+os demais não alteram o treinamento, o limiar ou a seleção do modelo e servem
+para verificar a robustez da interpretação. A cobertura é uma variável de
+auditoria, não um atributo preditor.
 
 \subsubsection{Construção dos atributos}
 
@@ -1048,7 +1063,7 @@ permanecem no mesmo lado da fronteira temporal. O agrupamento é preservado como
 identificador para análises de dependência ou ponderação posteriores; a base
 atual não elimina destinos distintos associados ao mesmo choque.
 
-São criadas seis views específicas:
+O esquema admite três pares de views específicas:
 
 \begin{itemize}
     \item \texttt{treino\_validacao\_1} e \texttt{validacao\_1};
@@ -1056,21 +1071,22 @@ São criadas seis views específicas:
     \item \texttt{treino\_final} e \texttt{teste\_final}.
 \end{itemize}
 
-Todas contêm apenas eventos classificáveis que passaram pela regra temporal
-correspondente.
+Cada banco contextual popula somente o par correspondente e contém apenas
+eventos classificáveis que passaram pela regra temporal.
 
 Essas views constituem o contrato entre a construção da base e o treinamento.
-O programa de seleção recebe somente as quatro views de desenvolvimento. As
-duas views finais são consumidas por outro programa, executado por um comando
+O programa de seleção recebe dois bancos e somente as quatro views de
+desenvolvimento. As duas views finais pertencem a um terceiro banco, consumido
+por outro programa, executado por um comando
 separado, para reduzir o risco de consulta acidental ao teste oficial.
 
 \subsection{Treinamento, seleção e avaliação final}
 
 \subsubsection{Escopo dos dados e separação das etapas}
 
-O treinamento consome exclusivamente
-\path{resultados/modelagem/base_modelagem.sqlite}. Nenhum banco de clima,
-câmbio, inflação, transporte ou outra fonte externa é integrado nesta versão.
+O treinamento consome exclusivamente as bases contextuais produzidas pelo
+projeto. Nenhum banco de clima, câmbio, inflação, transporte ou outra fonte
+externa é integrado nesta versão.
 Essa restrição mantém a pergunta experimental alinhada ao banco já construído:
 verificar quanto os atributos históricos, a relação entre mercados e o choque
 observado explicam a propagação registrada.
@@ -1084,29 +1100,27 @@ A implementação foi dividida em dois comandos:
     escolhida em todo o treino final e somente depois consultar o teste oficial.
 \end{enumerate}
 
-Há também o orquestrador dedicado
-\texttt{pipeline-treinamento-avaliacao}, que chama esses dois comandos em ordem
-após uma invocação explícita. Ele não integra o \texttt{pipeline-completo}.
-Assim, recriar o pré-processamento, o Granger, os eventos ou a base de modelagem
-não abre automaticamente o período reservado. A separação é uma barreira
-operacional: o teste continua tecnicamente acessível ao comando final e ao
-orquestrador dedicado, mas deixa de fazer parte do ciclo repetido de
-desenvolvimento.
+O orquestrador \texttt{pipeline-completo} reconstrói separadamente as cadeias
+das duas validações e executa apenas a seleção dos modelos. Seu manifesto
+registra que o teste final não foi incluído. A avaliação oficial pertence ao
+orquestrador distinto \texttt{pipeline-avaliacao-final}, que exige o caminho de
+um JSON de seleção previamente congelado, reconstrói somente o contexto final e
+preserva seus resultados em outro diretório versionado.
 
 \subsubsection{Validação da entrada}
 
-Antes de ajustar modelos, o programa exige uma execução de modelagem com
-status \texttt{concluida}, o catálogo de atributos e as quatro views de
-desenvolvimento. Cada view deve ser não vazia, possuir todas as colunas
-registradas, conter somente alvos 0 e 1, apresentar as duas classes e não ter
-identificadores de evento duplicados. Em cada divisão, a maior data do treino
-deve ser anterior à menor data da validação e nenhum identificador pode
-aparecer nos dois lados.
+Antes de ajustar modelos, o programa exige duas execuções de modelagem com
+status \texttt{concluida}: uma para cada validação. Os contextos, as assinaturas
+metodológicas e os catálogos de atributos devem coincidir com o protocolo. Cada
+view deve ser não vazia, possuir todas as colunas registradas, conter somente
+alvos 0 e 1, apresentar as duas classes e não ter identificadores de evento
+duplicados. Em cada divisão, a maior data do treino deve ser anterior à menor
+data da validação e nenhum identificador pode aparecer nos dois lados.
 
 Essas verificações não substituem a regra de construção das partições, mas
 impedem que uma base incompleta ou uma alteração acidental das views seja
-aceita silenciosamente pelo treinamento. O hash SHA-256 da base e o
-identificador de sua execução são registrados junto dos resultados.
+aceita silenciosamente pelo treinamento. Os hashes SHA-256 das bases e os
+identificadores de suas execuções são registrados junto dos resultados.
 
 \subsubsection{Preparação dos atributos dentro de cada treino}
 
@@ -1277,8 +1291,9 @@ o resultado convencional por linha.
 A seleção grava \path{resultados/treinamento/validacao.sqlite}. O banco contém:
 
 \begin{itemize}
-    \item identificação da execução, hash e caminho da base, semente, critério
-    de seleção e a declaração de que o teste final não foi consultado;
+    \item identificação da execução, hashes e caminhos das duas bases,
+    assinatura metodológica, semente, critério de seleção e a declaração de
+    que o teste final não foi consultado;
     \item catálogo das 25 configurações e indicação da selecionada;
     \item limiar e resumo médio de cada configuração;
     \item métricas por configuração e divisão;
@@ -1287,9 +1302,10 @@ A seleção grava \path{resultados/treinamento/validacao.sqlite}. O banco conté
 
 Também é criado
 \path{resultados/treinamento/configuracao_selecionada.json}, que registra o
-hash e a execução da base, a lista e a assinatura dos atributos, a semente, as
-quatro views consultadas, o modelo, os hiperparâmetros, o limiar e o resumo das
-validações. O JSON é o contrato consumido pela avaliação final. As saídas da
+hash e a execução de cada base, a assinatura metodológica, a lista e a
+assinatura dos atributos, a semente, as quatro views consultadas, o modelo, os
+hiperparâmetros, o limiar e o resumo das validações. O JSON é o contrato
+consumido pela avaliação final. As saídas da
 seleção são escritas primeiro em arquivos temporários e somente substituem os
 destinos depois da validação de integridade do SQLite. Como a seleção pertence
 ao desenvolvimento, o serviço permite sua reconstrução explícita.
@@ -1300,8 +1316,9 @@ Antes da avaliação oficial, o segundo programa verifica se o JSON corresponde
 ao formato esperado, se declara não ter consultado o teste e se lista
 exatamente as quatro views de desenvolvimento. O código, a família e os
 hiperparâmetros devem coincidir com uma das configurações implementadas. Em
-seguida, são comparados com a base atual o hash SHA-256, o identificador da
-execução, a lista de atributos e sua assinatura.
+seguida, o programa exige uma base marcada como contexto \texttt{final} e
+compara sua assinatura metodológica, sua lista de atributos e a assinatura dos
+atributos com aquelas congeladas durante a seleção.
 
 Somente após essas verificações a configuração escolhida é ajustada em
 \texttt{treino\_final}, que contém o desenvolvimento disponível até 31 de
@@ -1325,13 +1342,10 @@ Essa proteção reduz repetições acidentais, embora uma repetição consciente
 continue possível por opção explícita ou por outro caminho de saída. O hash do
 JSON efetivamente usado é registrado para permitir auditoria posterior.
 
-O pipeline dedicado antecipa essa verificação: antes de refazer a validação,
-ele recusa iniciar se o banco da avaliação final ou o modelo serializado já
-existir. Desse modo, não substitui os resultados de desenvolvimento para somente
-depois descobrir que a etapa oficial está protegida. Quando não há artefatos
-finais, ele refaz a seleção e só abre o teste se essa primeira etapa terminar
-com sucesso. Por prosseguir diretamente até o teste oficial, esse orquestrador
-deve ser invocado apenas quando a metodologia e a seleção estiverem encerradas.
+O \texttt{pipeline-avaliacao-final} copia e verifica o hash do JSON congelado,
+usa um diretório novo e somente abre o teste depois que a cadeia final, a base e
+o ajuste do modelo terminam. Seu manifesto registra explicitamente que o teste
+final foi consultado, além dos parâmetros e hashes dos artefatos.
 
 % ==========================================
 % RESULTADOS
@@ -1417,8 +1431,10 @@ observadas no destino. Esses registros não estão comprovadamente errados: eles
 seguem a regra atual, segundo a qual ao menos uma observação futura sem resposta
 já permite o rótulo 0. Entretanto, representam negativos com evidência mais
 fraca do que uma janela completamente observada. A base de treinamento os
-preserva, e a exigência de cobertura completa será decidida antes da execução
-definitiva ou tratada em análise de sensibilidade específica.
+preserva. Para não escolher arbitrariamente uma cobertura completa nem confundir
+frequência irregular de publicação com ausência de efeito, a avaliação compara
+os cinco mínimos de cobertura descritos anteriormente e registra seus tamanhos
+de amostra e métricas separadamente.
 
 \subsection{Distribuição temporal para a modelagem}
 
@@ -1449,10 +1465,9 @@ entre 37,4\% e 40,8\%, sem desbalanceamento extremo entre os períodos.
 
     \par\smallskip
     \footnotesize
-    Fonte: banco
-    \path{resultados/efeitos/domino/efeito_domino.sqlite}. As contagens
-    definitivas deverão ser obtidas de
-    \path{resultados/modelagem/base_modelagem.sqlite} após sua execução.
+    Fonte: execução histórica do banco do Efeito Dominó. As contagens
+    definitivas deverão ser obtidas das duas bases contextuais após sua
+    execução.
 \end{table}
 
 Antes da purga, as duas validações contêm eventos dos dez produtos e das 62
@@ -1519,24 +1534,21 @@ mesmo desempenho se estende a pares sem relação significativa. Será necessár
 comparar posteriormente os resultados com um controle formado por relações não
 significativas ou datas embaralhadas.
 
-As duas validações internas avaliarão o classificador condicionado à rede de
-relações e aos limites de choque definidos no período de desenvolvimento até
-outubro de 2025. Como essas etapas anteriores não serão reestimadas dentro de
-cada divisão, seus resultados não constituirão uma validação temporal ponta a
-ponta de todo o pipeline. Para isso, seria necessário refazer a seleção das
-relações, a correção FDR e os limites de choque usando somente o treino de cada
-divisão. O teste final, por outro lado, permanece isolado: nenhum dado posterior
-a 31 de outubro de 2025 foi usado para definir a rede, os limites, os atributos
-ou o modelo que será avaliado entre novembro de 2025 e outubro de 2026.
+As duas validações internas passam a avaliar o pipeline de ponta a ponta. Em
+cada divisão, o pré-processamento aprende suas referências somente no treino,
+Granger refaz a seleção das relações e a correção FDR, e o Efeito Dominó
+recalcula os limites antes de caracterizar o período seguinte. O contexto final
+permanece isolado: nenhum dado posterior a 31 de outubro de 2025 será usado para
+definir a rede, os limites, os atributos ou o modelo avaliado entre novembro de
+2025 e outubro de 2026.
 
-Até esta etapa, foram concluídos o pré-processamento, a construção das séries,
-o teste de Granger e a caracterização dos eventos. Os scripts de construção da
-base, seleção dos classificadores e avaliação final também foram implementados.
-Entretanto, a base de modelagem ainda precisa ser materializada com os
-artefatos atuais, e nenhum modelo foi treinado nem avaliado. Após essa execução,
-as contagens pós-purga deverão substituir as quantidades brutas apresentadas na
-Tabela~\ref{tab:divisoes-modelagem}; somente então serão acrescentados os
-resultados comparativos e a avaliação oficial.
+A cadeia da primeira validação foi executada até o Efeito Dominó. Os scripts de
+bases contextuais, seleção com duas origens e avaliação final separada foram
+preparados, mas a segunda cadeia e a nova seleção ainda precisam ser executadas.
+Após essa execução, as contagens pós-purga deverão substituir as quantidades
+brutas apresentadas na Tabela~\ref{tab:divisoes-modelagem}; somente então serão
+acrescentados os resultados comparativos. A avaliação oficial continuará
+pendente até o encerramento das decisões metodológicas.
 
 \clearpage
 \printbibliography[heading=bibintoc,title={Referências}]

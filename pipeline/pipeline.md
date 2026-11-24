@@ -1,39 +1,51 @@
-# Pipeline completo
+# Pipelines temporais
 
 Este arquivo é um apoio operacional. A descrição metodológica principal está
 no relatório do projeto.
 
-O pipeline completo executa, no mesmo contêiner e em ordem:
+## Desenvolvimento
 
-1. pré-processamento das cotações;
-2. construção das séries e teste de Granger;
-3. caracterização do Efeito Dominó;
-4. construção da base de modelagem.
+O `pipeline-completo` executa somente o ciclo de desenvolvimento:
 
-O treinamento e a avaliação final ficam fora deste pipeline. Em especial, o
-`pipeline-completo` não consulta o período reservado em `teste_final`. Quando a
-seleção estiver encerrada, as duas etapas podem ser encadeadas explicitamente
-com `docker compose run --build --rm pipeline-treinamento-avaliacao`. O fluxo
-operacional está em [`treinamento/README.md`](../treinamento/README.md), e as
-regras metodológicas completas permanecem no relatório principal.
+1. pré-processamento, Granger, Efeito Dominó e base da validação 1;
+2. pré-processamento, Granger, Efeito Dominó e base da validação 2;
+3. comparação e seleção dos modelos nas duas validações;
+4. análise de sensibilidade com cobertura mínima de uma a cinco observações
+   futuras para os negativos, sem interferir na seleção.
 
-Execute com:
+Os cortes são fixos e passados diretamente aos scripts:
+
+- validação 1: treino até `2023-12-31` e avaliação até `2024-12-31`;
+- validação 2: treino até `2024-12-31` e avaliação até `2025-10-31`.
+
+Execute:
 
 ```bash
 docker compose run --build --rm pipeline-completo
 ```
 
-O terminal mostra uma barra de progresso geral, a etapa atual, as etapas já
-concluídas, quantas ainda faltam e o tempo decorrido. As mensagens internas de
-cada processo continuam visíveis.
+Cada rodada recebe um nome `execucao-AAAAMMDD-HHMMSS` e fica em
+`resultados/versoes/<nome>/`. O manifesto registra código, parâmetros, hashes,
+duração, contextos e `inclui_teste_final: false`. Uma falha preserva os
+artefatos parciais para diagnóstico e não inicia as etapas seguintes.
 
-Se uma etapa falhar, a execução é interrompida e as seguintes não são
-iniciadas. Como cada etapa substitui sua saída de forma atômica, uma falha não
-deve sobrescrever o último banco válido daquela etapa.
+## Avaliação final protegida
 
-As saídas são gravadas em:
+O teste oficial não integra o pipeline de desenvolvimento. Depois de encerrar
+as decisões metodológicas, informe explicitamente a configuração congelada:
 
-- `resultados/preprocessamento/cotacoes_preprocessadas.sqlite`;
-- `resultados/granger/granger.sqlite`;
-- `resultados/efeitos/domino/efeito_domino.sqlite`;
-- `resultados/modelagem/base_modelagem.sqlite`.
+```bash
+PIPELINE_SELECAO_JSON=resultados/versoes/EXECUCAO/treinamento/configuracao_selecionada.json \
+  docker compose run --build --rm pipeline-avaliacao-final
+```
+
+Esse pipeline reconstrói a cadeia final com treino até `2025-10-31`, gera uma
+base exclusiva e somente então ajusta o modelo selecionado e consulta o período
+de `2025-11-01` a `2026-10-31`.
+
+A avaliação recusa uma base cuja assinatura metodológica seja diferente da
+assinatura das duas validações ou uma seleção sem a política de sensibilidade
+da cobertura. A mesma análise é repetida no teste apenas depois do ajuste do
+modelo congelado. A seleção, os bancos, o modelo e o manifesto ficam em
+`resultados/avaliacoes-finais/<nome>/`. Cada execução usa um diretório novo e
+não sobrescreve resultados oficiais anteriores.

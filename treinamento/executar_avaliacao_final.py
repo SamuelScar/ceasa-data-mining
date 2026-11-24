@@ -18,6 +18,8 @@ import sklearn
 
 from treinamento.comum import (
     ALVO,
+    COBERTURAS_MINIMAS_NEGATIVO,
+    COLUNA_COBERTURA,
     COLUNA_GRUPO,
     SCHEMA_VERSION,
     VISOES_FINAIS,
@@ -27,6 +29,7 @@ from treinamento.comum import (
     abrir_base_somente_leitura,
     assinatura_atributos,
     calcular_metricas,
+    calcular_sensibilidade_cobertura,
     carregar_atributos,
     carregar_visao,
     configuracoes_candidatas,
@@ -104,11 +107,13 @@ def carregar_selecao(path: Path) -> dict[str, Any]:
         raise ValueError(f"não foi possível ler a configuração: {path}") from erro
     campos = {
         "schema_version",
-        "base_modelagem",
+        "bases_modelagem",
+        "metodologia_sha256",
         "atributos",
         "atributos_sha256",
         "semente",
         "modelo",
+        "analise_sensibilidade_cobertura",
         "teste_final_consultado",
     }
     ausentes = campos - set(documento)
@@ -122,6 +127,18 @@ def carregar_selecao(path: Path) -> dict[str, Any]:
         raise ValueError("a configuração não comprova o isolamento do teste final")
     if tuple(documento.get("divisoes_consultadas", ())) != VISOES_VALIDACAO:
         raise ValueError("a configuração não corresponde às validações previstas")
+    bases = documento["bases_modelagem"]
+    if not isinstance(bases, dict) or set(bases) != {"validacao_1", "validacao_2"}:
+        raise ValueError("a configuração não registra as duas bases de validação")
+    politica = documento["analise_sensibilidade_cobertura"]
+    if not isinstance(politica, dict) or (
+        politica.get("regra_principal_cobertura_minima_negativo") != 1
+        or politica.get("coberturas_minimas_negativo")
+        != list(COBERTURAS_MINIMAS_NEGATIVO)
+        or politica.get("positivos_confirmados_mantidos") is not True
+        or politica.get("participa_selecao") is not False
+    ):
+        raise ValueError("a política de sensibilidade da cobertura é incompatível")
     return documento
 
 
@@ -145,15 +162,17 @@ def carregar_configuracao_modelo(documento: dict[str, Any]) -> ConfiguracaoModel
 
 def validar_selecao_com_base(
     documento: dict[str, Any],
-    hash_base: str,
     execucao_base: dict[str, Any],
     atributos: AtributosModelo,
 ) -> None:
-    origem = documento["base_modelagem"]
-    if str(origem.get("sha256")) != hash_base:
-        raise ValueError("a base atual difere da base usada na seleção do modelo")
-    if int(origem.get("execucao_id")) != int(execucao_base["id"]):
-        raise ValueError("a execução de modelagem difere da usada na seleção")
+    if execucao_base.get("contexto") != "final":
+        raise ValueError("a avaliação oficial exige uma base do contexto final")
+    if str(documento["metodologia_sha256"]) != str(
+        execucao_base.get("metodologia_sha256")
+    ):
+        raise ValueError(
+            "a metodologia da base final difere da usada nas validações"
+        )
     if documento["atributos"] != atributos.como_dict():
         raise ValueError("o catálogo de atributos mudou após a seleção")
     if str(documento["atributos_sha256"]) != assinatura_atributos(atributos):
@@ -197,6 +216,8 @@ def extrair_importancias(modelo: Any) -> list[tuple[str, float]]:
 def criar_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
+        PRAGMA foreign_keys = ON;
+
         CREATE TABLE execucoes_avaliacao_final (
             id INTEGER PRIMARY KEY,
             schema_version INTEGER NOT NULL,
@@ -205,6 +226,7 @@ def criar_schema(connection: sqlite3.Connection) -> None:
             base_modelagem_caminho TEXT NOT NULL,
             base_modelagem_sha256 TEXT NOT NULL,
             execucao_modelagem_id INTEGER NOT NULL,
+            metodologia_sha256 TEXT NOT NULL,
             selecao_caminho TEXT NOT NULL,
             selecao_sha256 TEXT NOT NULL,
             codigo_modelo TEXT NOT NULL,
@@ -223,12 +245,43 @@ def criar_schema(connection: sqlite3.Connection) -> None:
             valor REAL NOT NULL
         );
 
+        CREATE TABLE cenarios_sensibilidade_cobertura (
+            id INTEGER PRIMARY KEY,
+            cobertura_minima_negativo INTEGER NOT NULL
+                CHECK (cobertura_minima_negativo BETWEEN 1 AND 5),
+            limiar REAL NOT NULL,
+            linhas_avaliadas INTEGER NOT NULL,
+            positivos INTEGER NOT NULL,
+            negativos INTEGER NOT NULL,
+            avaliavel INTEGER NOT NULL CHECK (avaliavel IN (0, 1)),
+            motivo_nao_avaliavel TEXT,
+            UNIQUE (cobertura_minima_negativo),
+            CHECK (linhas_avaliadas = positivos + negativos),
+            CHECK (
+                (avaliavel = 1 AND motivo_nao_avaliavel IS NULL)
+                OR
+                (avaliavel = 0 AND motivo_nao_avaliavel IS NOT NULL)
+            )
+        );
+
+        CREATE TABLE metricas_sensibilidade_cobertura (
+            id INTEGER PRIMARY KEY,
+            cenario_id INTEGER NOT NULL,
+            metrica TEXT NOT NULL,
+            valor REAL NOT NULL,
+            FOREIGN KEY (cenario_id)
+                REFERENCES cenarios_sensibilidade_cobertura(id),
+            UNIQUE (cenario_id, metrica)
+        );
+
         CREATE TABLE previsoes_teste_final (
             id INTEGER PRIMARY KEY,
             evento_id INTEGER NOT NULL UNIQUE,
             data_choque TEXT NOT NULL,
             grupo_choque TEXT NOT NULL,
             alvo INTEGER NOT NULL CHECK (alvo IN (0, 1)),
+            dias_observados_destino INTEGER NOT NULL
+                CHECK (dias_observados_destino BETWEEN 1 AND 5),
             probabilidade REAL NOT NULL CHECK (probabilidade BETWEEN 0 AND 1),
             previsao INTEGER NOT NULL CHECK (previsao IN (0, 1))
         );
@@ -255,6 +308,7 @@ def escrever_resultados(
     teste: pd.DataFrame,
     probabilidades: np.ndarray,
     metricas: dict[str, float],
+    sensibilidade_cobertura: list[dict[str, Any]],
     importancias: list[tuple[str, float]],
     iniciada_em: str,
 ) -> None:
@@ -268,11 +322,12 @@ def escrever_resultados(
                 INSERT INTO execucoes_avaliacao_final (
                     id, schema_version, iniciada_em, concluida_em,
                     base_modelagem_caminho, base_modelagem_sha256,
-                    execucao_modelagem_id, selecao_caminho, selecao_sha256,
+                    execucao_modelagem_id, metodologia_sha256,
+                    selecao_caminho, selecao_sha256,
                     codigo_modelo, familia_modelo, parametros_json, semente,
                     limiar, linhas_treino, linhas_teste,
                     teste_final_consultado, status
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'concluida')
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'concluida')
                 """,
                 (
                     SCHEMA_VERSION,
@@ -281,6 +336,7 @@ def escrever_resultados(
                     str(args.base_db.resolve()),
                     hash_base,
                     int(execucao_base["id"]),
+                    str(execucao_base["metodologia_sha256"]),
                     str(args.selection_json.resolve()),
                     hash_selecao,
                     configuracao.codigo,
@@ -296,12 +352,41 @@ def escrever_resultados(
                 "INSERT INTO metricas_teste_final (metrica, valor) VALUES (?, ?)",
                 sorted(metricas.items()),
             )
+            for cenario in sensibilidade_cobertura:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO cenarios_sensibilidade_cobertura (
+                        cobertura_minima_negativo, limiar, linhas_avaliadas,
+                        positivos, negativos, avaliavel, motivo_nao_avaliavel
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        cenario["cobertura_minima_negativo"],
+                        limiar,
+                        cenario["linhas_avaliadas"],
+                        cenario["positivos"],
+                        cenario["negativos"],
+                        int(cenario["avaliavel"]),
+                        cenario["motivo_nao_avaliavel"],
+                    ),
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO metricas_sensibilidade_cobertura (
+                        cenario_id, metrica, valor
+                    ) VALUES (?, ?, ?)
+                    """,
+                    [
+                        (int(cursor.lastrowid), nome, valor)
+                        for nome, valor in cenario["metricas"].items()
+                    ],
+                )
             connection.executemany(
                 """
                 INSERT INTO previsoes_teste_final (
                     evento_id, data_choque, grupo_choque, alvo,
-                    probabilidade, previsao
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    dias_observados_destino, probabilidade, previsao
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -309,14 +394,24 @@ def escrever_resultados(
                         str(data_choque),
                         str(grupo),
                         int(alvo),
+                        int(cobertura),
                         float(probabilidade),
                         int(previsao),
                     )
-                    for evento_id, data_choque, grupo, alvo, probabilidade, previsao in zip(
+                    for (
+                        evento_id,
+                        data_choque,
+                        grupo,
+                        alvo,
+                        cobertura,
+                        probabilidade,
+                        previsao,
+                    ) in zip(
                         teste["id"],
                         teste["data_choque"],
                         teste[COLUNA_GRUPO],
                         teste[ALVO],
+                        teste[COLUNA_COBERTURA],
                         probabilidades,
                         previsoes,
                         strict=True,
@@ -343,6 +438,16 @@ def escrever_resultados(
         ).fetchone()[0]
         if int(quantidade) != len(teste):
             raise RuntimeError("a saída não contém todas as previsões do teste")
+        cenarios = connection.execute(
+            """
+            SELECT COUNT(DISTINCT cobertura_minima_negativo)
+            FROM cenarios_sensibilidade_cobertura
+            """
+        ).fetchone()[0]
+        if int(cenarios) != len(COBERTURAS_MINIMAS_NEGATIVO):
+            raise RuntimeError(
+                "a saída não contém todos os cenários de sensibilidade da cobertura"
+            )
     finally:
         connection.close()
 
@@ -357,9 +462,9 @@ def main() -> None:
 
     base = abrir_base_somente_leitura(args.base_db)
     try:
-        execucao_base = validar_base(base, VISOES_FINAIS)
+        execucao_base = validar_base(base, VISOES_FINAIS, "final")
         atributos = carregar_atributos(base)
-        validar_selecao_com_base(documento, hash_base, execucao_base, atributos)
+        validar_selecao_com_base(documento, execucao_base, atributos)
         treino = carregar_visao(base, "treino_final", atributos)
         X_treino, y_treino = preparar_matriz(treino, atributos)
 
@@ -391,6 +496,14 @@ def main() -> None:
         limiar,
         teste[COLUNA_GRUPO],
     )
+    previsoes_teste = teste[
+        [ALVO, COLUNA_GRUPO, COLUNA_COBERTURA]
+    ].copy()
+    previsoes_teste["probabilidade"] = probabilidades
+    sensibilidade_cobertura = calcular_sensibilidade_cobertura(
+        previsoes_teste,
+        limiar,
+    )
     importancias = extrair_importancias(modelo)
     artefato = {
         "schema_version": SCHEMA_VERSION,
@@ -406,6 +519,9 @@ def main() -> None:
             "semente": semente,
             "limiar": limiar,
         },
+        "analise_sensibilidade_cobertura": documento[
+            "analise_sensibilidade_cobertura"
+        ],
         "modelo": modelo,
     }
 
@@ -425,6 +541,7 @@ def main() -> None:
             teste,
             probabilidades,
             metricas,
+            sensibilidade_cobertura,
             importancias,
             iniciada_em,
         )

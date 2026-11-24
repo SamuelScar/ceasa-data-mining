@@ -19,9 +19,13 @@ docker compose run --build --rm preprocessamento
 O arquivo existente somente é substituído depois que o novo SQLite é concluído
 e validado. Se a execução falhar, o banco anterior é preservado.
 
-O `.env` pode definir `CEASA_DATA_LIMITE_INFERENCIA` no formato `AAAA-MM-DD`.
-Quando a variável está vazia, o processamento continua normalmente e as regras
-inferidas permanecem apenas como candidatas.
+O `.env` pode definir `CEASA_DATA_CORTE_TREINO` no formato `AAAA-MM-DD`. O
+corte limita os dados usados tanto para aprender as regras de conversão quanto
+para calcular medianas, tamanhos de grupo e recorrência dos outliers. A opção
+anterior `CEASA_DATA_LIMITE_INFERENCIA` continua aceita como compatibilidade.
+Quando nenhum corte está definido, o processamento continua normalmente, as
+regras inferidas permanecem apenas como candidatas e a detecção exploratória de
+outliers usa a base completa.
 
 ## Transformações realizadas
 
@@ -43,7 +47,8 @@ inferidas permanecem apenas como candidatas.
 - Corrige apresentações com `kg` concatenado ao sufixo `PE`, como
   `Cx.20 KgPE`.
 - Identifica a origem das cotações, incluindo o complemento PROHORT.
-- Classifica possíveis outliers sem corrigir nem remover os valores originais.
+- Aprende as referências dos outliers somente no período de treino e as aplica
+  às demais datas, sem corrigir nem remover os valores originais.
 
 ## Decisões adotadas
 
@@ -65,11 +70,14 @@ inferidas permanecem apenas como candidatas.
 - Regras inferidas exigem concordância do peso explícito, suporte mínimo de
   registros e presença em datas suficientes. O preço não é usado para escolher
   o peso.
-- Outliers com preço comum igual a R$ 0,01, razão inferior a 0,01 ou superior
-  a 20 vezes a mediana são classificados como `erro_provavel`. Grupos com pelo
-  menos cinco ocorrências suspeitas recebem `inconsistencia_recorrente`; as
-  demais recebem `extremo_isolado`. Os limites podem ser alterados pelos
-  argumentos do script e ficam registrados nos parâmetros da execução.
+- A mediana, o tamanho do grupo e a recorrência usados na detecção de outliers
+  são calculados somente até `CEASA_DATA_CORTE_TREINO`. A referência fica
+  congelada e é aplicada também às cotações posteriores. Outliers com preço
+  comum igual a R$ 0,01, razão inferior a 0,01 ou superior a 20 vezes a mediana
+  são classificados como `erro_provavel`. Grupos com pelo menos cinco
+  ocorrências suspeitas no treino recebem `inconsistencia_recorrente`; as demais
+  recebem `extremo_isolado`. Os limites ficam registrados nos parâmetros da
+  execução.
 - Todos os outliers suspeitos são preservados no banco para auditoria, mas são
   desconsiderados de `cotacoes_analiticas_principais`. Não existe etapa de
   revisão manual obrigatória e nenhum preço é corrigido ou apagado.

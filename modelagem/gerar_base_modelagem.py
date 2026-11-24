@@ -16,11 +16,51 @@ import numpy as np
 import pandas as pd
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 JANELAS_HISTORICAS = (5, 10, 20)
 MAX_LAG_RETORNO = 10
-DEFAULT_INICIO_VALIDACAO_1 = "2024-01-01"
-DEFAULT_INICIO_VALIDACAO_2 = "2025-01-01"
+
+
+@dataclass(frozen=True)
+class ConfiguracaoContexto:
+    nome: str
+    inicio_series: date
+    corte_treino: date
+    fim_avaliacao: date
+    visao_treino: str
+    visao_avaliacao: str
+    papel_avaliacao: str
+
+
+CONTEXTOS = {
+    "validacao_1": ConfiguracaoContexto(
+        nome="validacao_1",
+        inicio_series=date(2022, 1, 4),
+        corte_treino=date(2023, 12, 31),
+        fim_avaliacao=date(2024, 12, 31),
+        visao_treino="treino_validacao_1",
+        visao_avaliacao="validacao_1",
+        papel_avaliacao="validacao",
+    ),
+    "validacao_2": ConfiguracaoContexto(
+        nome="validacao_2",
+        inicio_series=date(2022, 1, 4),
+        corte_treino=date(2024, 12, 31),
+        fim_avaliacao=date(2025, 10, 31),
+        visao_treino="treino_validacao_2",
+        visao_avaliacao="validacao_2",
+        papel_avaliacao="validacao",
+    ),
+    "final": ConfiguracaoContexto(
+        nome="final",
+        inicio_series=date(2022, 1, 4),
+        corte_treino=date(2025, 10, 31),
+        fim_avaliacao=date(2026, 10, 31),
+        visao_treino="treino_final",
+        visao_avaliacao="teste_final",
+        papel_avaliacao="teste",
+    ),
+}
 
 COLUNAS_CATEGORICAS = [
     "produto",
@@ -83,12 +123,6 @@ for lado in ("origem", "destino"):
 
 
 @dataclass(frozen=True)
-class Configuracao:
-    inicio_validacao_1: date
-    inicio_validacao_2: date
-
-
-@dataclass(frozen=True)
 class ContextoTemporal:
     inicio_series: date
     corte_treino: date
@@ -98,20 +132,6 @@ class ContextoTemporal:
 
 def agora_iso() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def valor_ambiente(nome: str, padrao: str) -> str:
-    valor = os.getenv(nome)
-    return valor if valor not in (None, "") else padrao
-
-
-def data_iso(valor: str) -> date:
-    try:
-        return date.fromisoformat(valor)
-    except ValueError as erro:
-        raise argparse.ArgumentTypeError(
-            f"data inválida: {valor!r}; use o formato AAAA-MM-DD"
-        ) from erro
 
 
 def criar_parser() -> argparse.ArgumentParser:
@@ -137,32 +157,16 @@ def criar_parser() -> argparse.ArgumentParser:
         help="Banco de eventos caracterizados do Efeito Dominó",
     )
     parser.add_argument(
+        "--contexto",
+        choices=tuple(CONTEXTOS),
+        required=True,
+        help="Divisão temporal produzida por esta cadeia de dados",
+    )
+    parser.add_argument(
         "--output-db",
         type=Path,
         default=Path("resultados/modelagem/base_modelagem.sqlite"),
         help="SQLite que receberá a base supervisionada",
-    )
-    parser.add_argument(
-        "--inicio-validacao-1",
-        type=data_iso,
-        default=data_iso(
-            valor_ambiente(
-                "MODELAGEM_INICIO_VALIDACAO_1",
-                DEFAULT_INICIO_VALIDACAO_1,
-            )
-        ),
-        help="Início da primeira validação temporal",
-    )
-    parser.add_argument(
-        "--inicio-validacao-2",
-        type=data_iso,
-        default=data_iso(
-            valor_ambiente(
-                "MODELAGEM_INICIO_VALIDACAO_2",
-                DEFAULT_INICIO_VALIDACAO_2,
-            )
-        ),
-        help="Início da segunda validação temporal",
     )
     parser.add_argument(
         "--overwrite",
@@ -172,7 +176,7 @@ def criar_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def validar_argumentos(args: argparse.Namespace) -> Configuracao:
+def validar_argumentos(args: argparse.Namespace) -> ConfiguracaoContexto:
     entradas = [
         args.preprocessamento_db,
         args.granger_db,
@@ -191,14 +195,7 @@ def validar_argumentos(args: argparse.Namespace) -> Configuracao:
         raise FileExistsError(
             f"a saída já existe: {args.output_db}; use --overwrite para substituí-la"
         )
-    if args.inicio_validacao_1 >= args.inicio_validacao_2:
-        raise ValueError(
-            "--inicio-validacao-1 deve ser anterior a --inicio-validacao-2"
-        )
-    return Configuracao(
-        inicio_validacao_1=args.inicio_validacao_1,
-        inicio_validacao_2=args.inicio_validacao_2,
-    )
+    return CONTEXTOS[args.contexto]
 
 
 def sha256_arquivo(path: Path) -> str:
@@ -207,6 +204,73 @@ def sha256_arquivo(path: Path) -> str:
         for bloco in iter(lambda: arquivo.read(1024 * 1024), b""):
             digest.update(bloco)
     return digest.hexdigest()
+
+
+def sha256_json(valor: object) -> str:
+    conteudo = json.dumps(
+        valor,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(conteudo).hexdigest()
+
+
+def parametros_metodologicos(
+    execucao_preprocessamento: dict[str, object],
+    execucao_granger: dict[str, object],
+    execucao_domino: dict[str, object],
+) -> dict[str, object]:
+    preprocessamento = json.loads(
+        str(execucao_preprocessamento["parametros_json"])
+    )
+    granger = json.loads(str(execucao_granger["parametros_json"]))
+    domino = json.loads(str(execucao_domino["parametros_json"]))
+
+    for chave in (
+        "data_corte_treino",
+        "data_limite_inferencia",
+        "chunk_size",
+        "sqlite_write_batch_size",
+    ):
+        preprocessamento.pop(chave, None)
+    for chave in ("data_inicio", "data_corte_treino", "data_fim_teste"):
+        granger.pop(chave, None)
+
+    return {
+        "schemas_fontes": {
+            "preprocessamento": int(execucao_preprocessamento["schema_version"]),
+            "granger": int(execucao_granger["schema_version"]),
+            "efeito_domino": int(execucao_domino["schema_version"]),
+        },
+        "preprocessamento": preprocessamento,
+        "granger": granger,
+        "efeito_domino": domino,
+        "modelagem": {
+            "janelas_historicas_datas_segunda_sexta": list(JANELAS_HISTORICAS),
+            "max_lag_retorno": MAX_LAG_RETORNO,
+            "unidade_analise": "produto, origem, destino e data do choque",
+            "purga_fronteiras": "janela do rotulo deve terminar dentro do periodo",
+        },
+    }
+
+
+def assinatura_metodologia(
+    metodologia: dict[str, object],
+    catalogo: pd.DataFrame,
+) -> str:
+    catalogo_normalizado = json.loads(
+        catalogo.sort_values("id").to_json(
+            orient="records",
+            force_ascii=False,
+        )
+    )
+    return sha256_json(
+        {
+            "metodologia": metodologia,
+            "catalogo_atributos": catalogo_normalizado,
+        }
+    )
 
 
 def abrir_somente_leitura(path: Path) -> sqlite3.Connection:
@@ -257,6 +321,7 @@ def validar_fontes(
     dict[str, object],
     dict[str, str],
     ContextoTemporal,
+    dict[str, object],
 ]:
     preprocessamento = abrir_somente_leitura(preprocessamento_db)
     try:
@@ -333,8 +398,24 @@ def validar_fontes(
     if int(execucao_domino["execucao_granger_id"]) != int(execucao_granger["id"]):
         raise ValueError("a execução do Efeito Dominó referencia outro Granger")
 
+    parametros_preprocessamento = json.loads(
+        str(execucao_preprocessamento["parametros_json"])
+    )
     parametros_granger = json.loads(str(execucao_granger["parametros_json"]))
     parametros_domino = json.loads(str(execucao_domino["parametros_json"]))
+    if parametros_preprocessamento.get("data_corte_treino") != parametros_granger.get(
+        "data_corte_treino"
+    ):
+        raise ValueError(
+            "o corte do pré-processamento diverge do corte registrado pelo Granger"
+        )
+    if (
+        parametros_preprocessamento.get("referencia_outliers")
+        != "treino_ate_data_corte"
+    ):
+        raise ValueError(
+            "o pré-processamento não usa referências de outliers aprendidas no treino"
+        )
     contexto = ContextoTemporal(
         inicio_series=date.fromisoformat(parametros_granger["data_inicio"]),
         corte_treino=date.fromisoformat(
@@ -343,29 +424,40 @@ def validar_fontes(
         fim_teste=date.fromisoformat(parametros_granger["data_fim_teste"]),
         janela_rotulo_dias=int(parametros_domino["janela_dias_uteis"]),
     )
+    metodologia = parametros_metodologicos(
+        execucao_preprocessamento,
+        execucao_granger,
+        execucao_domino,
+    )
     return (
         execucao_preprocessamento,
         execucao_granger,
         execucao_domino,
         hashes,
         contexto,
+        metodologia,
     )
 
 
 def validar_configuracao_temporal(
-    config: Configuracao,
+    config: ConfiguracaoContexto,
     contexto: ContextoTemporal,
 ) -> None:
-    if not (
-        contexto.inicio_series
-        < config.inicio_validacao_1
-        < config.inicio_validacao_2
-        <= contexto.corte_treino
-        < contexto.fim_teste
-    ):
+    observado = (
+        contexto.inicio_series,
+        contexto.corte_treino,
+        contexto.fim_teste,
+    )
+    esperado = (
+        config.inicio_series,
+        config.corte_treino,
+        config.fim_avaliacao,
+    )
+    if observado != esperado:
         raise ValueError(
-            "as datas devem respeitar: início das séries < validação 1 < "
-            "validação 2 <= corte do treino < fim do teste"
+            f"o contexto {config.nome} exige início/corte/fim "
+            f"{tuple(data.isoformat() for data in esperado)}, mas o banco de "
+            f"Granger registra {tuple(data.isoformat() for data in observado)}"
         )
     if contexto.janela_rotulo_dias < 1:
         raise ValueError("a janela do rótulo do Efeito Dominó deve ser positiva")
@@ -432,6 +524,23 @@ def carregar_eventos(domino_db: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         ]
     ].copy()
     return eventos, auditoria
+
+
+def validar_periodos_eventos(
+    eventos: pd.DataFrame,
+    contexto: ContextoTemporal,
+) -> None:
+    esperado = np.where(
+        eventos["data_choque"].dt.date <= contexto.corte_treino,
+        "treino",
+        "teste",
+    )
+    divergentes = eventos["periodo_domino"].astype(str).to_numpy() != esperado
+    if divergentes.any():
+        raise ValueError(
+            "o período registrado nos eventos do Efeito Dominó diverge do "
+            "corte temporal do banco de Granger"
+        )
 
 
 def carregar_series(granger_db: Path) -> pd.DataFrame:
@@ -751,7 +860,7 @@ def adicionar_divisao(
 
 def construir_particoes(
     eventos_modelagem: pd.DataFrame,
-    config: Configuracao,
+    config: ConfiguracaoContexto,
     contexto: ContextoTemporal,
 ) -> pd.DataFrame:
     eventos = eventos_modelagem.loc[
@@ -764,39 +873,14 @@ def construir_particoes(
     )
     linhas: list[dict[str, object]] = []
 
-    fim_treino_1 = config.inicio_validacao_1 - timedelta(days=1)
-    fim_validacao_1 = config.inicio_validacao_2 - timedelta(days=1)
     adicionar_divisao(
         linhas,
         eventos,
-        "validacao_1",
-        fim_treino_1,
-        config.inicio_validacao_1,
-        fim_validacao_1,
-        "validacao",
-        contexto.janela_rotulo_dias,
-    )
-
-    fim_treino_2 = config.inicio_validacao_2 - timedelta(days=1)
-    adicionar_divisao(
-        linhas,
-        eventos,
-        "validacao_2",
-        fim_treino_2,
-        config.inicio_validacao_2,
-        contexto.corte_treino,
-        "validacao",
-        contexto.janela_rotulo_dias,
-    )
-
-    adicionar_divisao(
-        linhas,
-        eventos,
-        "final",
+        config.nome,
         contexto.corte_treino,
         contexto.corte_treino + timedelta(days=1),
         contexto.fim_teste,
-        "teste",
+        config.papel_avaliacao,
         contexto.janela_rotulo_dias,
     )
     particoes = pd.DataFrame(linhas)
@@ -908,6 +992,9 @@ def criar_schema(connection: sqlite3.Connection) -> None:
             schema_version INTEGER NOT NULL,
             iniciada_em TEXT NOT NULL,
             concluida_em TEXT,
+            contexto TEXT NOT NULL
+                CHECK (contexto IN ('validacao_1', 'validacao_2', 'final')),
+            metodologia_sha256 TEXT NOT NULL,
             parametros_json TEXT NOT NULL,
             status TEXT NOT NULL
         );
@@ -1030,6 +1117,7 @@ def criar_schema(connection: sqlite3.Connection) -> None:
 def gerar_resumo(
     eventos: pd.DataFrame,
     particoes: pd.DataFrame,
+    config: ConfiguracaoContexto,
 ) -> dict[str, int]:
     resumo = {
         "eventos_totais": int(len(eventos)),
@@ -1050,28 +1138,28 @@ def gerar_resumo(
         how="left",
         validate="many_to_one",
     )
-    for divisao in ("validacao_1", "validacao_2", "final"):
-        for papel in ("treino", "validacao", "teste", "excluido"):
-            filtro = (
-                (particoes_com_alvo["divisao"] == divisao)
-                & (particoes_com_alvo["papel"] == papel)
+    for papel in ("treino", "validacao", "teste", "excluido"):
+        filtro = (
+            (particoes_com_alvo["divisao"] == config.nome)
+            & (particoes_com_alvo["papel"] == papel)
+        )
+        quantidade = int(filtro.sum())
+        if quantidade:
+            prefixo = f"{config.nome}_{papel}"
+            resumo[prefixo] = quantidade
+            resumo[f"{prefixo}_positivos"] = int(
+                (filtro & (particoes_com_alvo["efeito_domino"] == 1)).sum()
             )
-            quantidade = int(filtro.sum())
-            if quantidade:
-                prefixo = f"{divisao}_{papel}"
-                resumo[prefixo] = quantidade
-                resumo[f"{prefixo}_positivos"] = int(
-                    (filtro & (particoes_com_alvo["efeito_domino"] == 1)).sum()
-                )
-                resumo[f"{prefixo}_negativos"] = int(
-                    (filtro & (particoes_com_alvo["efeito_domino"] == 0)).sum()
-                )
+            resumo[f"{prefixo}_negativos"] = int(
+                (filtro & (particoes_com_alvo["efeito_domino"] == 0)).sum()
+            )
     return resumo
 
 
 def validar_saida(
     connection: sqlite3.Connection,
     resumo: dict[str, int],
+    config: ConfiguracaoContexto,
 ) -> None:
     integridade = connection.execute("PRAGMA integrity_check").fetchone()[0]
     if integridade != "ok":
@@ -1128,12 +1216,11 @@ def validar_saida(
         raise RuntimeError("existem partições associadas a eventos não classificáveis")
 
     for view, chave in (
-        ("treino_validacao_1", "validacao_1_treino"),
-        ("validacao_1", "validacao_1_validacao"),
-        ("treino_validacao_2", "validacao_2_treino"),
-        ("validacao_2", "validacao_2_validacao"),
-        ("treino_final", "final_treino"),
-        ("teste_final", "final_teste"),
+        (config.visao_treino, f"{config.nome}_treino"),
+        (
+            config.visao_avaliacao,
+            f"{config.nome}_{config.papel_avaliacao}",
+        ),
     ):
         quantidade = connection.execute(f"SELECT COUNT(*) FROM {view}").fetchone()[0]
         if int(quantidade) != resumo.get(chave, 0):
@@ -1145,8 +1232,10 @@ def gravar_banco(
     entradas: dict[str, Path],
     execucoes: dict[str, dict[str, object]],
     hashes: dict[str, str],
-    config: Configuracao,
+    config: ConfiguracaoContexto,
     contexto: ContextoTemporal,
+    metodologia: dict[str, object],
+    metodologia_sha256: str,
     eventos: pd.DataFrame,
     auditoria: pd.DataFrame,
     particoes: pd.DataFrame,
@@ -1157,11 +1246,10 @@ def gravar_banco(
     try:
         criar_schema(connection)
         parametros = {
+            "contexto": config.nome,
             "inicio_series": contexto.inicio_series.isoformat(),
-            "inicio_validacao_1": config.inicio_validacao_1.isoformat(),
-            "inicio_validacao_2": config.inicio_validacao_2.isoformat(),
-            "corte_treino_final": contexto.corte_treino.isoformat(),
-            "fim_teste_final": contexto.fim_teste.isoformat(),
+            "corte_treino": contexto.corte_treino.isoformat(),
+            "fim_avaliacao": contexto.fim_teste.isoformat(),
             "janela_rotulo_datas_segunda_sexta": contexto.janela_rotulo_dias,
             "janelas_historicas_datas_segunda_sexta": list(JANELAS_HISTORICAS),
             "max_lag_retorno": MAX_LAG_RETORNO,
@@ -1182,16 +1270,21 @@ def gravar_banco(
                 "fonte indireta validada por hash; atributos diarios usam "
                 "as agregacoes reproduzidas no banco de Granger"
             ),
+            "metodologia": metodologia,
+            "metodologia_sha256": metodologia_sha256,
         }
         connection.execute(
             """
             INSERT INTO execucoes_modelagem (
-                id, schema_version, iniciada_em, parametros_json, status
-            ) VALUES (1, ?, ?, ?, 'em_andamento')
+                id, schema_version, iniciada_em, contexto,
+                metodologia_sha256, parametros_json, status
+            ) VALUES (1, ?, ?, ?, ?, ?, 'em_andamento')
             """,
             (
                 SCHEMA_VERSION,
                 agora_iso(),
+                config.nome,
+                metodologia_sha256,
                 json.dumps(parametros, ensure_ascii=False, sort_keys=True),
             ),
         )
@@ -1251,7 +1344,7 @@ def gravar_banco(
             (agora_iso(),),
         )
         connection.commit()
-        validar_saida(connection, resumo)
+        validar_saida(connection, resumo, config)
         connection.commit()
     finally:
         connection.close()
@@ -1269,6 +1362,7 @@ def executar(args: argparse.Namespace) -> Path:
         execucao_domino,
         hashes,
         contexto,
+        metodologia,
     ) = validar_fontes(
         args.preprocessamento_db,
         args.granger_db,
@@ -1278,6 +1372,7 @@ def executar(args: argparse.Namespace) -> Path:
 
     print("[2/6] Carregando eventos e séries temporais...", flush=True)
     eventos, auditoria = carregar_eventos(args.domino_db)
+    validar_periodos_eventos(eventos, contexto)
     series = carregar_series(args.granger_db)
 
     print("[3/6] Construindo atributos disponíveis até cada choque...", flush=True)
@@ -1292,7 +1387,8 @@ def executar(args: argparse.Namespace) -> Path:
     print("[4/6] Construindo as divisões temporais com purga...", flush=True)
     particoes = construir_particoes(eventos_modelagem, config, contexto)
     catalogo = construir_catalogo()
-    resumo = gerar_resumo(eventos_modelagem, particoes)
+    metodologia_sha256 = assinatura_metodologia(metodologia, catalogo)
+    resumo = gerar_resumo(eventos_modelagem, particoes, config)
 
     print("[5/6] Gravando o banco temporário...", flush=True)
     descritor, nome_temporario = tempfile.mkstemp(
@@ -1318,6 +1414,8 @@ def executar(args: argparse.Namespace) -> Path:
             hashes,
             config,
             contexto,
+            metodologia,
+            metodologia_sha256,
             eventos_modelagem,
             auditoria,
             particoes,

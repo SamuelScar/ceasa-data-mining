@@ -57,66 +57,60 @@ bancos anteriores.
 
 ## Base de modelagem
 
-Com os três bancos derivados disponíveis, gere a base supervisionada e suas
-partições temporais:
+Cada cadeia temporal gera uma base própria. Para uma execução individual,
+informe o contexto compatível com as datas registradas no banco de Granger:
 
 ```bash
-docker compose run --build --rm base-modelagem
+MODELAGEM_CONTEXTO=validacao_1 \
+  docker compose run --build --rm base-modelagem
 ```
 
-O processo gera `resultados/modelagem/base_modelagem.sqlite`, com os atributos
-históricos, as informações de auditoria e as divisões de treino, validação e
-teste final.
+Os contextos aceitos são `validacao_1`, `validacao_2` e `final`. O gerador
+recusa datas incompatíveis e registra uma assinatura da metodologia e das
+regras dos atributos.
 
 ## Treinamento e validação
 
-Depois de gerar a base de modelagem, compare os modelos nas duas validações
-temporais de desenvolvimento:
+Depois de gerar as bases independentes das duas validações, compare os modelos:
 
 ```bash
 docker compose run --build --rm validacao-modelos
 ```
 
-Essa etapa usa somente o banco deste projeto. Ela não consulta a visão de teste
-final e grava as métricas em `resultados/treinamento/validacao.sqlite` e a
-configuração escolhida em
-`resultados/treinamento/configuracao_selecionada.json`.
+Essa etapa exige `resultados/modelagem/validacao_1.sqlite` e
+`resultados/modelagem/validacao_2.sqlite`. Ela verifica que as assinaturas
+metodológicas coincidem, não constrói nem consulta o teste final e grava as
+métricas em `resultados/treinamento/validacao.sqlite` e a configuração em
+`resultados/treinamento/configuracao_selecionada.json`. As saídas incluem a
+sensibilidade das métricas ao exigir de uma a cinco observações futuras para os
+negativos, sem usar essa análise para escolher o modelo.
 
-A avaliação oficial é um comando separado e deve ser executada apenas quando a
-seleção estiver encerrada:
-
-```bash
-docker compose run --build --rm avaliacao-final
-```
-
-Por segurança, esse serviço não sobrescreve uma avaliação anterior. O teste
-final também não faz parte do `pipeline-completo`.
-
-Para executar as duas etapas em sequência, depois de gerar a base de modelagem:
+A avaliação oficial possui um pipeline separado e exige explicitamente o JSON
+congelado pela validação:
 
 ```bash
-docker compose run --build --rm pipeline-treinamento-avaliacao
+PIPELINE_SELECAO_JSON=resultados/versoes/EXECUCAO/treinamento/configuracao_selecionada.json \
+  docker compose run --build --rm pipeline-avaliacao-final
 ```
 
-Esse pipeline dedicado primeiro refaz a validação e a seleção e, se ela for
-concluída, prossegue para a avaliação oficial. Como ele abre o teste final, deve
-ser usado somente quando a metodologia e a seleção estiverem encerradas. Antes
-de iniciar, o comando recusa a execução caso já exista o banco da avaliação ou
-o modelo final, evitando alterar a validação antes de descobrir que o resultado
-oficial está protegido.
+Esse comando reconstrói apenas o contexto final, confere a assinatura
+metodológica e preserva os resultados em `resultados/avaliacoes-finais/`.
 
 ## Pipeline completo
 
-Para executar sequencialmente pré-processamento, Granger, Efeito Dominó e
-construção da base de modelagem, sem iniciar treinamento nem abrir o teste
-final:
+Para executar todo o fluxo de desenvolvimento, incluindo as duas cadeias
+temporais e a seleção dos modelos:
 
 ```bash
 docker compose run --build --rm pipeline-completo
 ```
 
-O comando mostra a etapa atual, a porcentagem geral, as etapas concluídas e
-restantes e o tempo decorrido.
+O comando executa os contextos `validacao_1` e `validacao_2`, constrói suas
+bases e seleciona o modelo. Cada rodada fica em `resultados/versoes/`, com
+manifesto e hashes. O manifesto registra `inclui_teste_final: false`.
+
+O teste oficial nunca faz parte desse comando. Ele só pode ser consultado pelo
+pipeline separado `pipeline-avaliacao-final`.
 
 ## Ambiente Python com Docker
 

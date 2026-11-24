@@ -21,10 +21,11 @@ resultados/preprocessamento/cotacoes_preprocessadas.sqlite
 
 ## Execução
 
-O limite de inferência do pré-processamento deve ser igual ao fim do treino:
+O corte temporal do pré-processamento deve ser igual ao fim do treino. Ele
+limita tanto as conversões inferidas quanto as referências dos outliers:
 
 ```bash
-CEASA_DATA_LIMITE_INFERENCIA=2025-10-31 \
+CEASA_DATA_CORTE_TREINO=2025-10-31 \
   docker compose run --build --rm preprocessamento
 ```
 
@@ -36,8 +37,9 @@ docker compose run --build --rm granger
 
 O arquivo `resultados/granger/granger.sqlite` é construído em um arquivo
 temporário e somente substitui uma saída anterior depois da conclusão e da
-validação estrutural. O script recusa um banco pré-processado antigo, incompleto
-ou produzido com um limite de inferência diferente do corte de treino.
+validação estrutural. O script recusa um banco pré-processado antigo, incompleto,
+produzido com outro corte ou sem referências de outliers aprendidas somente no
+período de treino.
 
 ## Recorte fixado
 
