@@ -9,6 +9,7 @@ dependencies = [
     "numpy",
     "pandas",
     "pyarrow",
+    "rich>=14.1,<15",
     "scikit-learn",
     "scipy",
     "seaborn",

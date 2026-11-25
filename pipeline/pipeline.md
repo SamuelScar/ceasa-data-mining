@@ -29,6 +29,11 @@ Cada rodada recebe um nome `execucao-AAAAMMDD-HHMMSS` e fica em
 duração, contextos e `inclui_teste_final: false`. Uma falha preserva os
 artefatos parciais para diagnóstico e não inicia as etapas seguintes.
 
+Em um terminal interativo, um painel permanece fixo no rodapé com a etapa
+atual, o progresso geral e o tempo decorrido. A saída de cada processo continua
+visível acima do painel. Em execuções sem TTY, como logs redirecionados ou CI, o
+pipeline usa automaticamente mensagens de progresso em texto simples.
+
 ## Avaliação final protegida
 
 O teste oficial não integra o pipeline de desenvolvimento. Depois de encerrar

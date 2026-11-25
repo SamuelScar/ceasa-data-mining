@@ -22,6 +22,7 @@ import shutil
 import sqlite3
 import tempfile
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -278,6 +279,17 @@ EXCLUDED_COLUMNS = [
     "versoes_identidade",
     "houve_conflito_versoes",
 ]
+
+
+@dataclass
+class TemposInsercao:
+    leitura: float = 0.0
+    preparacao_chunks: float = 0.0
+    consolidacao: float = 0.0
+    transformacao: float = 0.0
+    preparacao_resultados: float = 0.0
+    gravacao_excluidas: float = 0.0
+    gravacao_cotacoes: float = 0.0
 
 
 def normalizar_texto(value: object) -> str | None:
@@ -1438,7 +1450,8 @@ LEFT JOIN apresentacoes_unidade au ON au.id = c.apresentacao_unidade_id
 LEFT JOIN unidades u ON u.id = au.unidade_id
 WHERE EXISTS (
     SELECT 1
-    FROM cotacao_proveniencias provenance
+    FROM cotacao_proveniencias AS provenance
+        INDEXED BY idx_cotacao_proveniencias_cotacao
     WHERE provenance.cotacao_id = c.id
       AND provenance.coleta_id = latest.coleta_id
 )
@@ -1698,16 +1711,19 @@ def consolidar_cotacoes_brutas(chunk: pd.DataFrame) -> pd.DataFrame:
         "chave_identidade",
         keep="first",
     ).copy()
+    numeric_prices = repeated_rows.loc[:, price_columns].apply(
+        pd.to_numeric,
+        errors="coerce",
+    )
+    medians = numeric_prices.groupby(
+        repeated_rows["chave_identidade"],
+        sort=False,
+        dropna=False,
+    ).median()
     for column in price_columns:
-        numeric_values = pd.to_numeric(repeated_rows[column], errors="coerce")
-        medians = numeric_values.groupby(
-            repeated_rows["chave_identidade"],
-            sort=False,
-            dropna=False,
-        ).median()
         consolidated_repeated[column] = consolidated_repeated[
             "chave_identidade"
-        ].map(medians)
+        ].map(medians[column])
 
     market_situations: dict[object, object] = {}
     for identity, versions in repeated_rows.groupby(
@@ -1742,6 +1758,35 @@ def consolidar_cotacoes_brutas(chunk: pd.DataFrame) -> pd.DataFrame:
         .sort_values(order_column, kind="stable")
         .drop(columns=order_column)
         .reset_index(drop=True)
+    )
+
+
+def exibir_tempos_insercao(tempos: TemposInsercao) -> None:
+    print("Detalhamento da transformação e gravação:", flush=True)
+    print(f"  Leitura SQLite: {tempos.leitura:.2f} s.", flush=True)
+    print(
+        f"  Preparação dos chunks: {tempos.preparacao_chunks:.2f} s.",
+        flush=True,
+    )
+    print(
+        f"  Consolidação: {tempos.consolidacao:.2f} s.",
+        flush=True,
+    )
+    print(
+        f"  Transformação: {tempos.transformacao:.2f} s.",
+        flush=True,
+    )
+    print(
+        f"  Separação dos resultados: {tempos.preparacao_resultados:.2f} s.",
+        flush=True,
+    )
+    print(
+        f"  Gravação das exclusões: {tempos.gravacao_excluidas:.2f} s.",
+        flush=True,
+    )
+    print(
+        f"  Gravação das cotações: {tempos.gravacao_cotacoes:.2f} s.",
+        flush=True,
     )
 
 
@@ -1786,6 +1831,7 @@ def inserir_cotacoes(
         .rename(columns={"id": "regra_inferencia_id"})
         .copy()
     )
+    tempos = TemposInsercao()
 
     def persist(raw: pd.DataFrame) -> None:
         nonlocal total_consolidated
@@ -1796,14 +1842,22 @@ def inserir_cotacoes(
         nonlocal conflicts
         if raw.empty:
             return
+
+        inicio = perf_counter()
         consolidated = consolidar_cotacoes_brutas(raw)
+        tempos.consolidacao += perf_counter() - inicio
+
+        inicio = perf_counter()
         processed = processar_chunk(
             consolidated,
             catalog,
             product_keys,
             active_rules,
         )
+        tempos.transformacao += perf_counter() - inicio
         total_consolidated += len(processed)
+
+        inicio = perf_counter()
         mapping_status = processed["status_mapeamento"]
         without_unit = mapping_status.eq("sem_unidade")
         without_exact_quantity = mapping_status.eq("sem_quantidade_exata")
@@ -1813,7 +1867,13 @@ def inserir_cotacoes(
         total_without_exact_quantity += int(without_exact_quantity.sum())
         total_ambiguous += int(ambiguous.sum())
         excluded = processed.loc[excluded_mapping, EXCLUDED_COLUMNS].copy()
+        processed = processed.loc[~excluded_mapping].copy()
+        total_persisted += len(processed)
+        conflicts += int(processed["houve_conflito_versoes"].sum())
+        tempos.preparacao_resultados += perf_counter() - inicio
+
         if not excluded.empty:
+            inicio = perf_counter()
             excluded.to_sql(
                 "cotacoes_excluidas_mapeamento",
                 target,
@@ -1821,11 +1881,10 @@ def inserir_cotacoes(
                 index=False,
                 chunksize=SQLITE_WRITE_BATCH_SIZE,
             )
-        processed = processed.loc[~excluded_mapping].copy()
-        total_persisted += len(processed)
-        conflicts += int(processed["houve_conflito_versoes"].sum())
+            tempos.gravacao_excluidas += perf_counter() - inicio
         if processed.empty:
             return
+        inicio = perf_counter()
         processed.to_sql(
             "cotacoes_preprocessadas",
             target,
@@ -1833,15 +1892,30 @@ def inserir_cotacoes(
             index=False,
             chunksize=SQLITE_WRITE_BATCH_SIZE,
         )
+        tempos.gravacao_cotacoes += perf_counter() - inicio
 
-    for chunk in pd.read_sql_query(SOURCE_QUERY, source, chunksize=chunk_size):
+    inicio = perf_counter()
+    chunks = iter(pd.read_sql_query(SOURCE_QUERY, source, chunksize=chunk_size))
+    tempos.leitura += perf_counter() - inicio
+    while True:
+        inicio = perf_counter()
+        try:
+            chunk = next(chunks)
+        except StopIteration:
+            tempos.leitura += perf_counter() - inicio
+            break
+        tempos.leitura += perf_counter() - inicio
+
+        inicio = perf_counter()
         total_selected += len(chunk)
         if not pending.empty:
             chunk = pd.concat([pending, chunk], ignore_index=True)
         last_identity = chunk["chave_identidade"].iloc[-1]
         last_group = chunk["chave_identidade"].eq(last_identity)
         pending = chunk.loc[last_group].copy()
-        persist(chunk.loc[~last_group].copy())
+        ready = chunk.loc[~last_group].copy()
+        tempos.preparacao_chunks += perf_counter() - inicio
+        persist(ready)
         print(
             f"Cotações selecionadas: {total_selected:,}; "
             f"identidades consolidadas: {total_consolidated:,}; "
@@ -1850,6 +1924,8 @@ def inserir_cotacoes(
         )
 
     persist(pending)
+
+    exibir_tempos_insercao(tempos)
     return {
         "cotacoes_selecionadas_ultima_coleta": total_selected,
         "cotacoes_consolidadas": total_consolidated,

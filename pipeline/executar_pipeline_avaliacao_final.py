@@ -6,7 +6,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,12 +17,12 @@ from executar_pipeline_versionado import (
     Contexto,
     Etapa,
     agora_iso,
-    exibir_estado,
     gravar_manifesto,
     metadados_artefatos,
     registrar_codigo,
     sha256_arquivo,
 )
+from progresso_terminal import PainelPipeline, executar_comando
 
 
 RAIZ_RESULTADOS = Path("resultados/avaliacoes-finais")
@@ -252,47 +251,53 @@ def executar() -> int:
     print("AVALIAÇÃO FINAL OFICIAL", flush=True)
     print(f"Seleção congelada: {selecao_origem}", flush=True)
     print("Esta execução consultará o período oficial de teste.", flush=True)
-    exibir_estado(0, len(etapas), inicio_total)
 
-    for indice, etapa in enumerate(etapas, start=1):
-        inicio_etapa = perf_counter()
-        print(
-            f"\n>>> Etapa {indice}/{len(etapas)}: {etapa.nome}\n"
-            f"    {etapa.descricao}\n",
-            flush=True,
-        )
-        resultado = subprocess.run(etapa.comando, check=False)
-        if resultado.returncode != 0:
-            manifesto["status"] = "falha"
-            manifesto["concluida_em"] = agora_iso()
-            manifesto["duracao_segundos"] = round(
-                perf_counter() - inicio_total,
-                3,
+    painel = PainelPipeline(
+        f"Avaliação final — {versao}",
+        len(etapas),
+    )
+    with painel:
+        for indice, etapa in enumerate(etapas, start=1):
+            inicio_etapa = perf_counter()
+            painel.iniciar_etapa(indice, etapa.nome, etapa.descricao)
+            codigo_saida = executar_comando(etapa.comando, painel)
+            if codigo_saida != 0:
+                manifesto["status"] = "falha"
+                manifesto["concluida_em"] = agora_iso()
+                manifesto["duracao_segundos"] = round(
+                    perf_counter() - inicio_total,
+                    3,
+                )
+                manifesto["falha"] = {
+                    "etapa": etapa.nome,
+                    "codigo_saida": codigo_saida,
+                }
+                gravar_manifesto(caminho_manifesto, manifesto)
+                painel.falhar_etapa(etapa.nome, codigo_saida)
+                painel.exibir_log()
+                painel.exibir_log(
+                    f"FALHA em {etapa.nome}. Artefatos parciais preservados."
+                )
+                return codigo_saida
+
+            concluidas = manifesto["etapas_concluidas"]
+            assert isinstance(concluidas, list)
+            concluidas.append(
+                {
+                    "nome": etapa.nome,
+                    "duracao_segundos": round(perf_counter() - inicio_etapa, 3),
+                }
             )
-            manifesto["falha"] = {
-                "etapa": etapa.nome,
-                "codigo_saida": resultado.returncode,
-            }
             gravar_manifesto(caminho_manifesto, manifesto)
-            print(f"\nFALHA em {etapa.nome}. Artefatos parciais preservados.", flush=True)
-            return resultado.returncode
+            painel.concluir_etapa(indice, etapa.nome)
 
-        concluidas = manifesto["etapas_concluidas"]
-        assert isinstance(concluidas, list)
-        concluidas.append(
-            {
-                "nome": etapa.nome,
-                "duracao_segundos": round(perf_counter() - inicio_etapa, 3),
-            }
-        )
+        painel.iniciar_finalizacao()
+        manifesto["artefatos"] = metadados_artefatos(raiz, artefatos)
+        manifesto["status"] = "concluida"
+        manifesto["concluida_em"] = agora_iso()
+        manifesto["duracao_segundos"] = round(perf_counter() - inicio_total, 3)
         gravar_manifesto(caminho_manifesto, manifesto)
-        exibir_estado(indice, len(etapas), inicio_total)
-
-    manifesto["artefatos"] = metadados_artefatos(raiz, artefatos)
-    manifesto["status"] = "concluida"
-    manifesto["concluida_em"] = agora_iso()
-    manifesto["duracao_segundos"] = round(perf_counter() - inicio_total, 3)
-    gravar_manifesto(caminho_manifesto, manifesto)
+        painel.finalizar()
 
     print(f"\nAvaliação final preservada em: {raiz}", flush=True)
     return 0

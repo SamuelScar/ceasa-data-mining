@@ -15,6 +15,8 @@ from pathlib import Path
 from time import perf_counter
 from zoneinfo import ZoneInfo
 
+from progresso_terminal import PainelPipeline, executar_comando
+
 
 RAIZ_RESULTADOS = Path("resultados/versoes")
 ENTRADA_BRUTA = Path("data/cotacoes.sqlite")
@@ -264,32 +266,6 @@ def obter_versao() -> tuple[str, bool]:
     return versao, False
 
 
-def duracao_legivel(segundos: float) -> str:
-    total = round(segundos)
-    horas, resto = divmod(total, 3600)
-    minutos, segundos_restantes = divmod(resto, 60)
-    if horas:
-        return f"{horas}h {minutos:02d}min {segundos_restantes:02d}s"
-    if minutos:
-        return f"{minutos}min {segundos_restantes:02d}s"
-    return f"{segundos_restantes}s"
-
-
-def exibir_estado(concluidas: int, total: int, inicio: float) -> None:
-    largura = 36
-    preenchido = round(largura * concluidas / total)
-    barra = "#" * preenchido + "-" * (largura - preenchido)
-    print("\n" + "=" * 72, flush=True)
-    print(f"Progresso geral: [{barra}] {100 * concluidas / total:6.2f}%", flush=True)
-    print(
-        f"Etapas concluídas: {concluidas}/{total} | "
-        f"Restantes: {total - concluidas} | "
-        f"Tempo: {duracao_legivel(perf_counter() - inicio)}",
-        flush=True,
-    )
-    print("=" * 72, flush=True)
-
-
 def metadados_artefatos(
     raiz: Path,
     artefatos: dict[str, Path],
@@ -350,47 +326,53 @@ def executar() -> int:
     print(f"Pipeline de desenvolvimento versionado: {versao}", flush=True)
     print("Contextos: validação 1 -> validação 2 -> seleção", flush=True)
     print("O teste final não será construído nem consultado.", flush=True)
-    exibir_estado(0, len(etapas), inicio_total)
 
-    for indice, etapa in enumerate(etapas, start=1):
-        inicio_etapa = perf_counter()
-        print(
-            f"\n>>> Etapa {indice}/{len(etapas)}: {etapa.nome}\n"
-            f"    {etapa.descricao}\n",
-            flush=True,
-        )
-        resultado = subprocess.run(etapa.comando, check=False)
-        if resultado.returncode != 0:
-            manifesto["status"] = "falha"
-            manifesto["concluida_em"] = agora_iso()
-            manifesto["duracao_segundos"] = round(
-                perf_counter() - inicio_total,
-                3,
+    painel = PainelPipeline(
+        f"Pipeline de desenvolvimento — {versao}",
+        len(etapas),
+    )
+    with painel:
+        for indice, etapa in enumerate(etapas, start=1):
+            inicio_etapa = perf_counter()
+            painel.iniciar_etapa(indice, etapa.nome, etapa.descricao)
+            codigo_saida = executar_comando(etapa.comando, painel)
+            if codigo_saida != 0:
+                manifesto["status"] = "falha"
+                manifesto["concluida_em"] = agora_iso()
+                manifesto["duracao_segundos"] = round(
+                    perf_counter() - inicio_total,
+                    3,
+                )
+                manifesto["falha"] = {
+                    "etapa": etapa.nome,
+                    "codigo_saida": codigo_saida,
+                }
+                gravar_manifesto(caminho_manifesto, manifesto)
+                painel.falhar_etapa(etapa.nome, codigo_saida)
+                painel.exibir_log()
+                painel.exibir_log(
+                    f"FALHA em {etapa.nome}. Artefatos parciais preservados."
+                )
+                return codigo_saida
+
+            concluidas = manifesto["etapas_concluidas"]
+            assert isinstance(concluidas, list)
+            concluidas.append(
+                {
+                    "nome": etapa.nome,
+                    "duracao_segundos": round(perf_counter() - inicio_etapa, 3),
+                }
             )
-            manifesto["falha"] = {
-                "etapa": etapa.nome,
-                "codigo_saida": resultado.returncode,
-            }
             gravar_manifesto(caminho_manifesto, manifesto)
-            print(f"\nFALHA em {etapa.nome}. Artefatos parciais preservados.", flush=True)
-            return resultado.returncode
+            painel.concluir_etapa(indice, etapa.nome)
 
-        concluidas = manifesto["etapas_concluidas"]
-        assert isinstance(concluidas, list)
-        concluidas.append(
-            {
-                "nome": etapa.nome,
-                "duracao_segundos": round(perf_counter() - inicio_etapa, 3),
-            }
-        )
+        painel.iniciar_finalizacao()
+        manifesto["artefatos"] = metadados_artefatos(raiz, artefatos)
+        manifesto["status"] = "concluida"
+        manifesto["concluida_em"] = agora_iso()
+        manifesto["duracao_segundos"] = round(perf_counter() - inicio_total, 3)
         gravar_manifesto(caminho_manifesto, manifesto)
-        exibir_estado(indice, len(etapas), inicio_total)
-
-    manifesto["artefatos"] = metadados_artefatos(raiz, artefatos)
-    manifesto["status"] = "concluida"
-    manifesto["concluida_em"] = agora_iso()
-    manifesto["duracao_segundos"] = round(perf_counter() - inicio_total, 3)
-    gravar_manifesto(caminho_manifesto, manifesto)
+        painel.finalizar()
 
     print(f"\nResultados preservados em: {raiz}", flush=True)
     print(f"Manifesto: {caminho_manifesto}", flush=True)

@@ -203,7 +203,45 @@ os atributos preditores.
 
 ## Estado atual
 
-O fluxo de desenvolvimento já foi executado com o contrato anterior de saída.
-Após esta alteração, ele precisa ser reexecutado para gerar as tabelas de
-sensibilidade e um novo JSON de seleção compatível. O teste final continua
-protegido e não deve ser consultado nessa etapa.
+Situação em 24 de novembro de 2026:
+
+- os pipelines de desenvolvimento e avaliação final já possuem um painel fixo
+  no terminal, com progresso geral, etapa atual, tempo decorrido e preservação
+  dos logs acima do painel;
+- o pré-processamento permanece sequencial e recebeu duas otimizações que
+  preservam o resultado: uso explícito do índice de proveniência e cálculo
+  conjunto das medianas das três colunas de preço;
+- a execução sequencial otimizada terminou em 31min49,22s, com 2.387.646
+  cotações selecionadas, 2.380.499 identidades consolidadas e 2.295.374
+  cotações gravadas;
+- o experimento com dois processos terminou em 34min30,05s, ficando 8,4% mais
+  lento. Os bancos foram comparados integralmente e apresentaram o mesmo
+  conteúdo lógico, por isso o paralelismo foi removido;
+- o comparador de bancos e a instrumentação dos tempos de leitura,
+  transformação e gravação foram mantidos para as próximas otimizações;
+- `resultados/versoes/execucao-20261124-160203` contém somente um manifesto com
+  status `em_andamento` e nenhuma etapa concluída. Essa execução foi
+  interrompida e não representa uma versão válida do pipeline;
+- o fluxo de desenvolvimento ainda precisa ser reexecutado por completo para
+  gerar as tabelas de sensibilidade e um novo
+  `configuracao_selecionada.json` compatível;
+- a avaliação final permanece protegida e o teste oficial não deve ser
+  consultado antes do congelamento da nova seleção.
+
+### Próximo ponto de trabalho
+
+O gargalo comprovado está na leitura e, principalmente, na gravação SQLite, não
+na transformação em Pandas. O próximo experimento deve comparar, sobre uma
+amostra de aproximadamente 50 mil linhas reais, a escrita atual do `to_sql` com
+inserções de múltiplas linhas usando `method="multi"`. Os bancos gerados no
+microbenchmark devem ser comparados integralmente antes de alterar o pipeline.
+
+Se houver ganho sem qualquer diferença de conteúdo, a otimização pode ser
+aplicada ao pré-processamento e validada em uma execução completa. Depois disso,
+o pipeline de desenvolvimento deve ser reexecutado desde o início. A avaliação
+final só poderá ocorrer após revisar e congelar a nova seleção.
+
+O banco local
+`resultados/preprocessamento/cotacoes_preprocessadas_paralelo.sqlite` foi
+preservado apenas para auditoria e pode ser removido quando essa comparação não
+for mais necessária.
