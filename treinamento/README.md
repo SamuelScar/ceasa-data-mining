@@ -203,45 +203,193 @@ os atributos preditores.
 
 ## Estado atual
 
-Situação em 24 de novembro de 2026:
+Situação em 26 de novembro de 2026:
 
-- os pipelines de desenvolvimento e avaliação final já possuem um painel fixo
-  no terminal, com progresso geral, etapa atual, tempo decorrido e preservação
-  dos logs acima do painel;
-- o pré-processamento permanece sequencial e recebeu duas otimizações que
-  preservam o resultado: uso explícito do índice de proveniência e cálculo
-  conjunto das medianas das três colunas de preço;
-- a execução sequencial otimizada terminou em 31min49,22s, com 2.387.646
-  cotações selecionadas, 2.380.499 identidades consolidadas e 2.295.374
-  cotações gravadas;
-- o experimento com dois processos terminou em 34min30,05s, ficando 8,4% mais
-  lento. Os bancos foram comparados integralmente e apresentaram o mesmo
-  conteúdo lógico, por isso o paralelismo foi removido;
-- o comparador de bancos e a instrumentação dos tempos de leitura,
-  transformação e gravação foram mantidos para as próximas otimizações;
-- `resultados/versoes/execucao-20261124-160203` contém somente um manifesto com
-  status `em_andamento` e nenhuma etapa concluída. Essa execução foi
-  interrompida e não representa uma versão válida do pipeline;
-- o fluxo de desenvolvimento ainda precisa ser reexecutado por completo para
-  gerar as tabelas de sensibilidade e um novo
-  `configuracao_selecionada.json` compatível;
+- os pipelines de desenvolvimento e avaliação final possuem acompanhamento
+  interativo e preservam os artefatos de cada execução versionada;
+- o pré-processamento permanece sequencial, com otimizações que preservaram o
+  conteúdo lógico do banco principal;
+- o experimento de pré-processamento paralelo e a execução versionada
+  interrompida foram descartados; seus artefatos locais também foram removidos;
+- o fluxo de desenvolvimento contextual ainda precisa ser executado por
+  completo para produzir as duas validações e um novo
+  `configuracao_selecionada.json`;
 - a avaliação final permanece protegida e o teste oficial não deve ser
-  consultado antes do congelamento da nova seleção.
+  consultado durante a evolução metodológica.
 
-### Próximo ponto de trabalho
+## Evolução da causalidade de Granger
 
-O gargalo comprovado está na leitura e, principalmente, na gravação SQLite, não
-na transformação em Pandas. O próximo experimento deve comparar, sobre uma
-amostra de aproximadamente 50 mil linhas reais, a escrita atual do `to_sql` com
-inserções de múltiplas linhas usando `method="multi"`. Os bancos gerados no
-microbenchmark devem ser comparados integralmente antes de alterar o pipeline.
+O foco atual é melhorar as relações e defasagens produzidas pelo Granger para
+fornecer sinais mais úteis ao Efeito Dominó e, em seguida, ao treinamento. Uma
+configuração não será considerada melhor apenas por encontrar mais relações
+significativas.
 
-Se houver ganho sem qualquer diferença de conteúdo, a otimização pode ser
-aplicada ao pré-processamento e validada em uma execução completa. Depois disso,
-o pipeline de desenvolvimento deve ser reexecutado desde o início. A avaliação
-final só poderá ocorrer após revisar e congelar a nova seleção.
+Cada alteração no Granger deve ser avaliada em três níveis:
 
-O banco local
-`resultados/preprocessamento/cotacoes_preprocessadas_paralelo.sqlite` foi
-preservado apenas para auditoria e pode ser removido quando essa comparação não
-for mais necessária.
+1. **Granger:** estabilidade das relações e direções, distribuição dos lags,
+   significância após FDR, diagnósticos do modelo e ganho preditivo fora da
+   amostra;
+2. **Efeito Dominó:** cobertura dos eventos, quantidade de casos
+   classificáveis e proporção de confirmações;
+3. **Treinamento:** F1, PR-AUC e MCC nas duas validações temporais.
+
+O método-base já implementado utiliza retornos logarítmicos, ADF e KPSS,
+Granger linear bivariado, seleção do lag pelo menor BIC entre 1 e 10 e correção
+global de Benjamini--Hochberg. As extensões estudadas a partir de Shojaie e Fox
+ainda não foram incorporadas ao método principal.
+
+### Ordem das melhorias
+
+1. robustez da seleção de lags e diagnósticos do modelo;
+2. sensibilidade ao preenchimento e à construção das séries;
+3. Granger multivariado condicional por produto;
+4. estabilidade das relações em janelas temporais;
+5. regularização, assimetria e não linearidade somente se justificadas pelos
+   resultados anteriores.
+
+### Resultado do experimento de lags
+
+Os limites máximos de 5, 10, 15 e 20 foram comparados sobre a mesma amostra,
+fixada em 20 lags. O experimento confirmou o mesmo hash de entrada, a mesma
+quantidade de observações e BICs idênticos para os modelos compartilhados.
+
+Resultados principais:
+
+- 257 das 268 direções mantiveram o mesmo lag em todos os limites;
+- somente três direções mudaram de significância após FDR;
+- o limite 5 produziu 53 relações significativas e 25 escolhas no teto;
+- os limites 10, 15 e 20 produziram as mesmas 56 relações significativas;
+- nenhum modelo disponível até 20 superou o lag 10.
+
+O limite escolhido permanece `max_lag=10`. Nas execuções definitivas,
+`max_lag_amostra` também permanece em 10 para não descartar observações sem
+necessidade. O valor 20 pertence somente ao experimento de comparabilidade.
+
+### Resultado dos resíduos e da previsão
+
+O Granger passou a registrar, sem alterar a entrada do Efeito Dominó:
+
+- Ljung--Box dos resíduos restritos e irrestritos no maior segmento contínuo
+  de treino;
+- RMSE e MAE fora da amostra para os dois modelos;
+- ganhos percentuais do modelo irrestrito;
+- classificação experimental de relação robusta.
+
+Uma relação robusta precisa ser significativa após FDR, não apresentar
+autocorrelação residual no modelo irrestrito e melhorar simultaneamente RMSE e
+MAE fora da amostra. A avaliação exige pelo menos 30 observações posteriores e
+usa previsão de um passo à frente com os coeficientes fixados no treino.
+
+O pipeline de desenvolvimento `execucao-20261125-230051` avaliou o critério sem
+consultar o teste final. Entre as relações significativas após FDR:
+
+- na validação 1, 8 de 11 passaram pelos resíduos, 4 melhoraram RMSE, apenas 1
+  melhorou MAE e 1 foi classificada como robusta;
+- na validação 2, 13 de 30 passaram pelos resíduos, 20 melhoraram RMSE, 4
+  melhoraram MAE e nenhuma foi classificada como robusta;
+- a única relação robusta da validação 1, `batata: curitiba -> cascavel`, não
+  manteve ganho preditivo na validação 2.
+
+Portanto, nenhuma relação foi robusta nos dois períodos. O filtro experimental
+não deve substituir a significância FDR no Efeito Dominó. O F1 médio de
+`0,6115` obtido pela execução ainda corresponde ao fluxo com todas as relações
+significativas, não ao filtro robusto.
+
+### Resultado da sensibilidade ao preenchimento
+
+O experimento compara `ffill_limite` 0, 1 e 3 nas duas
+validações, mantendo os demais parâmetros fixos e reutilizando exatamente o
+mesmo pré-processado entre os três limites de cada contexto.
+
+Além da estabilidade das relações, a comparação resume Ljung--Box, RMSE, MAE e
+o ganho nos dias de alta do destino. As altas são definidas pelo maior valor
+entre zero e o percentil 90 dos retornos do destino no treino, sem consultar o
+período avaliado. Essas métricas são diagnósticas e não alteram o filtro atual.
+
+O experimento pode ser executado com:
+
+```bash
+docker compose run --build --rm --no-deps -T granger \
+  python -m experimentos.granger.executar_sensibilidade_ffill
+```
+
+Os pré-processados temporários são descartados após as três execuções válidas
+de cada contexto. Depois da comparação, permanecem somente os dois bancos com
+`ffill_limite=3`, o manifesto e a comparação em JSON. Os bancos dos limites 0
+e 1 têm tamanho e hash registrados no manifesto antes de serem descartados.
+
+O experimento `execucao-20261126-005710` confirmou a manutenção de
+`ffill_limite=3`. O limite 1 teve Jaccard ligeiramente maior, mas o limite 3
+preservou mais relações significativas nas duas validações e mais relações com
+resíduos adequados e ganho simultâneo de RMSE e MAE nas altas. Nenhuma
+configuração produziu uma relação robusta geral nos dois períodos.
+
+### Resultado do experimento condicional
+
+O experimento comparou o Granger bivariado com redes condicionais por produto.
+Como os sete mercados não possuem cobertura conjunta, a primeira
+janela de treino seleciona a maior rede numericamente viável sem consultar a
+significância. Essa configuração é congelada e reutilizada na validação 2.
+
+Cada rede possui uma ordem comum escolhida pelo BIC. O teste de uma direção
+remove somente os lags da origem e mantém o destino e os demais mercados como
+controles. A comparação registra relações bivariadas retidas, removidas e novas,
+além da estabilidade temporal e dos ganhos nas altas.
+
+O resultado reteve 3 de 11 relações bivariadas comparáveis na validação 1 e 8
+de 27 na validação 2. Quatro relações permaneceram significativas nas duas
+janelas, com Jaccard de `0,4`, mas nenhuma foi robusta para altas nos dois
+períodos. O condicionamento funcionou como filtro de relações indiretas, porém
+ainda não produziu uma rede preditivamente estável para substituir o Granger
+bivariado no Efeito Dominó.
+
+### Resultado da estabilidade temporal
+
+O experimento reutiliza as redes condicionais e cria janelas expansivas
+com pelo menos 18 meses de treino, fechamentos trimestrais e seis meses de
+avaliação. Uma relação será selecionada quando for testável em pelo menos três
+janelas e atingir frequência mínima de 60% em significância FDR, resíduos
+adequados e resposta dinâmica positiva durante cinco dias úteis.
+
+A mesma regra é aplicada às duas validações. Também são registradas a
+estabilidade do lag e as frequências de melhora de RMSE e MAE, sem usá-las para
+recalibrar a validação 2. Os bancos de cada janela são temporários; apenas um
+SQLite compacto, a configuração, o manifesto e a comparação em JSON são
+preservados.
+
+Os seis meses de avaliação permitem alcançar o mínimo de dez ocorrências acima
+do percentil 90 exigido pelas métricas de altas. As avaliações podem se
+sobrepor, mas nunca antecedem o respectivo corte de treino.
+
+O executor usa os bancos existentes e não refaz o pré-processamento:
+
+```bash
+docker compose run --build --rm --no-deps -T granger \
+  python -m experimentos.granger.executar_estabilidade_temporal \
+  resultados/experimentos/sensibilidade-ffill/execucao-20261126-005710
+```
+
+As dez janelas foram executadas em `58,593` segundos. A validação 1 selecionou
+duas relações e a validação 2 também selecionou duas, mas somente
+`morango: maringa -> foz-do-iguacu` apareceu nas duas. O Jaccard caiu de `0,4`
+no Granger condicional final para `0,3333` após o filtro temporal.
+
+Embora a relação comum tenha mantido lag 1, significância frequente, resíduos
+adequados e resposta positiva, ela não preservou ganho de RMSE, MAE ou das
+altas no teste completo da validação 2. Portanto, o filtro temporal não melhora
+o método principal e não deve alimentar o Efeito Dominó.
+
+### Validação executada
+
+- 24 testes unitários de robustez de lags, sensibilidade ao preenchimento,
+  Granger condicional e estabilidade temporal passaram em `0,337` segundos
+  depois da separação em `experimentos/granger/`;
+- o experimento condicional concluiu em aproximadamente 23 segundos;
+- o experimento de estabilidade temporal concluiu as 11 etapas em `58,593`
+  segundos e preservou somente `368 KB` de artefatos;
+- os quatro bancos dos limites 0 e 1 foram removidos após a comparação,
+  liberando aproximadamente `80,7 MiB`;
+- nenhum dos experimentos consultou o período de teste final.
+
+O período final de novembro de 2025 a outubro de 2026 permanece protegido e
+não pode orientar essa escolha.

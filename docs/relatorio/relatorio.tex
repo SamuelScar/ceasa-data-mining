@@ -52,7 +52,7 @@
     }\\[0.5cm]
 
     {\normalsize
-        Pré-processamento, Granger, Efeito Dominó e protocolo de modelagem
+        Pré-processamento, Granger, Efeito Dominó e validação temporal
     }\\[2cm]
 
     {\normalsize
@@ -98,14 +98,19 @@ possuem preço comum em R\$/kg. O recorte temporal carregou 175.160 cotações e
 produziu 252 pares candidatos entre mercados. Dos 134 pares elegíveis, todos
 atenderam aos critérios de estacionariedade; foram testadas 268 direções e 62
 apresentaram significância após a correção de Benjamini--Hochberg. Esses
-resultados são preliminares e representam evidência de precedência temporal e
-capacidade preditiva no sentido de Granger, não uma demonstração isolada de
-causalidade econômica direta. Nas 62 relações significativas foram encontrados
-6.149 choques na origem; 4.815 puderam ser classificados e 1.881 apresentaram
+resultados representam evidência de precedência temporal e capacidade
+preditiva no sentido de Granger, não uma demonstração isolada de causalidade
+econômica direta. Nas 62 relações significativas foram encontrados 6.149
+choques na origem; 4.815 puderam ser classificados e 1.881 apresentaram
 resposta no destino dentro da janela de cinco datas de segunda a sexta. O
-modelo preditivo ainda não foi treinado, mas foram implementados a construção
-da base supervisionada, o protocolo de validação temporal, a comparação dos
-classificadores e a avaliação final isolada que orientarão essa próxima etapa.
+pipeline de desenvolvimento foi executado em duas validações temporais e
+selecionou uma regressão logística, com F1 médio de 0,6115, sem consultar o
+teste final. Também foram avaliados o limite de lags, o preenchimento das
+séries, diagnósticos residuais, ganho preditivo fora da amostra, Granger
+condicional e estabilidade em janelas expansivas. Essas extensões aumentaram a
+rastreabilidade, mas nenhuma produziu relações simultaneamente estáveis e
+robustas nas duas validações; por isso, ainda não substituem o Granger
+bivariado usado pelo Efeito Dominó.
 
 \noindent\textbf{Palavras-chave:} CEASA; mineração de dados; séries temporais;
 pré-processamento; preços agrícolas; Efeito Dominó.
@@ -139,12 +144,12 @@ econômica real.
 
 Diante disso, foi construído um fluxo rastreável que parte do banco produzido
 pelo \textit{crawler}, gera uma base pré-processada, organiza séries temporais,
-aplica o teste de Granger e caracteriza ocorrências de Efeito Dominó. O banco
-bruto não é modificado e cada etapa gera uma saída derivada auditável. Até o
-momento, não foi realizado o treinamento de um modelo preditivo. Os programas
-que selecionam a configuração nas validações temporais e executam a avaliação
-final isolada já foram implementados, mas dependem da materialização da base de
-modelagem antes de serem executados.
+aplica o teste de Granger, caracteriza ocorrências de Efeito Dominó e constrói
+uma base supervisionada. O banco bruto não é modificado e cada etapa gera uma
+saída derivada auditável. O pipeline de desenvolvimento já recalculou toda a
+cadeia nas duas validações temporais e selecionou uma configuração preditiva.
+A avaliação final isolada permanece pendente e seu período protegido não foi
+consultado durante as decisões metodológicas.
 
 O uso do termo Efeito Dominó neste projeto é uma analogia à propagação
 sequencial descrita em outras áreas. Na segurança de processos, por exemplo,
@@ -225,6 +230,14 @@ série acrescentam informação à previsão de outra série, além da informaç
 contida no próprio histórico da variável prevista. Portanto, a expressão
 causalidade de Granger indica precedência temporal com ganho preditivo e não,
 isoladamente, um mecanismo econômico causal.
+
+A revisão de \textcite{shojaie2022} organiza avanços recentes do método,
+incluindo modelos multivariados, seleção estruturada de relações, estabilidade
+temporal e extensões não lineares. A partir desse referencial, o presente
+trabalho priorizou diagnósticos do modelo linear, avaliação fora da amostra e
+condicionamento pelos demais mercados observados antes de considerar métodos
+regularizados ou redes neurais, cuja calibração seria frágil com a amostra
+temporal disponível.
 
 No domínio de preços agrícolas, \textcite{oliveira2023} analisaram séries
 mensais dos tomates Longa Vida e Cajá comercializados em Fortaleza e Ibiapaba,
@@ -761,6 +774,27 @@ temporal preditiva no sentido de Granger. Ele não prova, sozinho, que um
 entreposto provoque diretamente a alteração de preço no outro, pois fatores
 externos ou variáveis não observadas também podem explicar a relação.
 
+\subsubsection{Diagnósticos e previsão fora da amostra}
+
+Depois da escolha do lag, o modelo irrestrito é submetido ao teste de
+Ljung--Box no maior segmento contínuo do treino. A hipótese nula representa
+ausência de autocorrelação residual, e o ajuste dos graus de liberdade considera
+a ordem autorregressiva. Esse diagnóstico verifica se ainda resta estrutura
+temporal não explicada pelo modelo selecionado.
+
+Os modelos restrito e irrestrito também fazem previsões de um passo à frente no
+período posterior ao treino, mantendo os coeficientes fixos. A comparação
+registra RMSE e MAE gerais e, separadamente, os erros nos dias em que o retorno
+do destino supera o maior valor entre zero e seu percentil 90 aprendido no
+treino. A avaliação geral exige pelo menos 30 observações e o recorte de altas
+exige ao menos dez ocorrências.
+
+Uma relação recebe a classificação experimental de robusta somente quando é
+significativa após FDR, apresenta resíduos irrestritos adequados e reduz
+simultaneamente RMSE e MAE fora da amostra. A classificação não altera a entrada
+do Efeito Dominó enquanto não demonstrar estabilidade nas duas validações
+temporais.
+
 \subsubsection{Validação e rastreabilidade}
 
 O banco de Granger registra o caminho, o tamanho e o hash SHA-256 do banco
@@ -776,6 +810,42 @@ para cada direção testada, a seleção de um lag entre 1 e 10 e a permanência
 valores $q$ no intervalo de zero a um. Essas verificações confirmam a coerência
 interna do artefato, mas não transformam associação temporal em causalidade
 econômica.
+
+\subsubsection{Experimentos de aperfeiçoamento}
+
+As alternativas foram comparadas sem consultar o teste final. A primeira
+validação usa 2022--2023 como treino e 2024 como avaliação; a segunda usa
+2022--2024 como treino e janeiro a outubro de 2025 como avaliação. O processo
+avaliou quatro dimensões:
+
+\begin{enumerate}
+    \item limites máximos de 5, 10, 15 e 20 lags sobre uma amostra comum;
+    \item preenchimento de lacunas por zero, uma ou três datas de segunda a
+    sexta;
+    \item Granger multivariado por produto, condicionando cada direção pelos
+    demais mercados com cobertura suficiente;
+    \item frequência das relações condicionais em janelas expansivas com 18
+    meses iniciais, fechamentos trimestrais e avaliação nos seis meses
+    seguintes.
+\end{enumerate}
+
+Os executores e comparadores desses estudos estão isolados em
+\path{experimentos/granger/}. Eles preservam a reprodução dos resultados, mas
+não integram o \texttt{pipeline-completo} nem são executados pelo fluxo
+principal.
+
+No modelo condicional, as redes são escolhidas somente pela cobertura do treino
+de 2022--2023, com no mínimo três mercados e seis observações por coeficiente no
+lag máximo. A configuração é congelada para a segunda validação, e uma ordem
+comum é escolhida pelo BIC em cada produto. A direção do efeito nas janelas é
+resumida por uma resposta dinâmica unitária acumulada em cinco datas de segunda
+a sexta.
+
+Os bancos dos limites de preenchimento 0 e 1 são descartados somente depois da
+comparação bem-sucedida; caminho, tamanho e hash permanecem no manifesto. Os
+dois bancos com limite 3 e os relatórios compactos são preservados porque
+alimentam os experimentos condicional e temporal. Os bancos intermediários de
+cada janela temporal também são descartados depois da agregação.
 
 \subsection{Caracterização do Efeito Dominó}
 
@@ -1389,6 +1459,79 @@ após a correção global.
     Fonte: banco \path{resultados/granger/granger.sqlite} da execução documentada.
 \end{table}
 
+\subsection{Resultados dos experimentos de aperfeiçoamento do Granger}
+
+A sensibilidade do limite de lags foi avaliada com máximos de 5, 10, 15 e 20
+sobre a mesma amostra, reservada para 20 defasagens. Em 257 das 268 direções, o
+lag escolhido permaneceu igual em todas as configurações. Os limites 10, 15 e
+20 selecionaram as mesmas 56 relações após FDR e as mesmas defasagens, enquanto
+o limite 5 encontrou 53 relações. Como nenhum modelo adicional entre 11 e 20
+melhorou o BIC, o limite 10 foi mantido.
+
+Os diagnósticos e a previsão fora da amostra mostraram que significância não
+implica necessariamente ganho preditivo. A Tabela~\ref{tab:granger-robustez}
+resume os resultados das duas validações do pipeline de desenvolvimento.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Diagnósticos das relações significativas nas validações temporais.}
+    \label{tab:granger-robustez}
+    \small
+    \begin{tabular}{lrr}
+        \toprule
+        \textbf{Indicador} & \textbf{Validação 1} & \textbf{Validação 2} \\
+        \midrule
+        Relações significativas após FDR & 11 & 30 \\
+        Resíduos irrestritos adequados & 8 & 13 \\
+        Melhora de RMSE & 4 & 20 \\
+        Melhora de MAE & 1 & 4 \\
+        Relações robustas & 1 & 0 \\
+        \bottomrule
+    \end{tabular}
+
+    \par\smallskip
+    \footnotesize
+    Fonte: execução de desenvolvimento
+    \texttt{execucao-20261125-230051}.
+\end{table}
+
+A única relação robusta da primeira validação, batata de Curitiba para
+Cascavel, não preservou o ganho na segunda. Portanto, o novo critério não
+substituiu a significância FDR como entrada do Efeito Dominó.
+
+Na sensibilidade ao preenchimento, os limites 0, 1 e 3 apresentaram,
+respectivamente, 3, 8 e 9 relações significativas comuns às duas validações,
+com Jaccard de 0,1667, 0,2963 e 0,2813. Nenhuma configuração produziu uma
+relação robusta geral nos dois períodos. O limite 3 foi mantido porque preservou
+mais relações significativas comuns e apresentou melhor cobertura dos
+diagnósticos específicos de altas, apesar do Jaccard ligeiramente maior do
+limite 1.
+
+O Granger condicional testou redes específicas por produto. Foram encontradas
+6 relações após FDR na primeira validação e 8 na segunda; 4 permaneceram
+significativas nos dois períodos, com Jaccard de 0,4. Nenhuma relação apresentou
+robustez nas altas nas duas validações. O condicionamento removeu associações
+potencialmente indiretas, mas não produziu uma rede preditivamente estável.
+
+Por fim, a análise em janelas expansivas selecionou duas relações em cada
+validação. Somente a relação do morango de Maringá para Foz do Iguaçu apareceu
+nas duas, resultando em Jaccard de 0,3333. Embora essa relação tenha mantido lag
+1, significância frequente, resíduos adequados e resposta dinâmica positiva,
+ela não preservou melhora de RMSE, MAE nem das métricas de altas no teste
+completo da segunda validação. Assim, o filtro temporal também não substitui o
+método principal.
+
+\subsection{Validação da implementação experimental}
+
+Uma bateria de 24 testes unitários de robustez dos lags, sensibilidade ao
+preenchimento, Granger condicional e estabilidade temporal foi aprovada em
+0,337 segundos depois da separação em \path{experimentos/granger/}. Ela cobre
+também o descarte seletivo dos bancos alternativos e valida os novos caminhos e
+importações. A execução condicional completa terminou em aproximadamente 23
+segundos. A estabilidade temporal processou dez janelas e uma etapa de
+agregação em 58,593 segundos, preservando 368~KB de resultados compactos e
+descartando os bancos intermediários.
+
 \subsection{Resultados da caracterização do Efeito Dominó}
 
 A Tabela~\ref{tab:efeito-domino-resultados} resume a execução documentada.
@@ -1465,9 +1608,8 @@ entre 37,4\% e 40,8\%, sem desbalanceamento extremo entre os períodos.
 
     \par\smallskip
     \footnotesize
-    Fonte: execução histórica do banco do Efeito Dominó. As contagens
-    definitivas deverão ser obtidas das duas bases contextuais após sua
-    execução.
+    Fonte: execução histórica do banco do Efeito Dominó. A seleção dos modelos
+    utilizou as bases contextuais materializadas separadamente.
 \end{table}
 
 Antes da purga, as duas validações contêm eventos dos dez produtos e das 62
@@ -1476,8 +1618,49 @@ todas apresentam ao menos um evento positivo e um negativo. Entretanto, a
 quantidade por relação é pequena em alguns casos: os mínimos são três eventos
 em 2024 e cinco entre janeiro e outubro de 2025. O recorte bruto do teste final
 contém 58 das 62 relações, portanto os resultados agregados desse período não
-representarão quatro relações sem evento classificável. Essas coberturas deverão
-ser recalculadas após a materialização das views.
+representam quatro relações sem evento classificável. Essas contagens descrevem
+o banco de referência e não foram reutilizadas para ajustar as validações
+contextuais.
+
+\subsection{Resultado da seleção dos classificadores}
+
+O pipeline de desenvolvimento recalculou pré-processamento, Granger, Efeito
+Dominó e base de modelagem em cada divisão antes de ajustar os classificadores.
+A execução \texttt{execucao-20261125-230051} foi concluída em 3.042,871
+segundos e registrou explicitamente \texttt{inclui\_teste\_final=false}.
+
+A configuração selecionada foi uma regressão logística com $C=10$, pesos de
+classe balanceados e limiar de decisão 0,25. A Tabela~\ref{tab:modelo-selecionado}
+apresenta as médias das duas validações temporais.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Desempenho médio da configuração selecionada nas validações.}
+    \label{tab:modelo-selecionado}
+    \small
+    \begin{tabular}{lr}
+        \toprule
+        \textbf{Métrica} & \textbf{Valor médio} \\
+        \midrule
+        F1 & 0,6115 \\
+        PR-AUC & 0,5194 \\
+        MCC & 0,2359 \\
+        Precisão & 0,4880 \\
+        Revocação & 0,8418 \\
+        \bottomrule
+    \end{tabular}
+
+    \par\smallskip
+    \footnotesize
+    Fonte: configuração selecionada na execução de desenvolvimento
+    \texttt{execucao-20261125-230051}.
+\end{table}
+
+Essas métricas pertencem ao desenvolvimento e ainda usam as relações
+bivariadas significativas após FDR. Os experimentos condicional e temporal não
+forneceram evidência suficiente para trocar essa entrada. O ajuste final e a
+consulta única ao período de novembro de 2025 a outubro de 2026 permanecem
+pendentes.
 
 % ==========================================
 % DISCUSSÃO
@@ -1495,16 +1678,21 @@ direções. A interpretação permanece restrita à precedência temporal predit
 no sentido de Granger; fatores externos ou variáveis não observadas podem
 explicar parte das relações.
 
+O resultado condicional reforça essa cautela: somente parte das associações
+bivariadas permaneceu significativa depois do controle pelos demais mercados
+observados. Além disso, nem o condicionamento nem a frequência em janelas
+expansivas produziram relações com ganho preditivo consistente nas duas
+validações. Uma rede menor não é necessariamente pior; nesse caso, porém, ainda
+faltou evidência de que o filtro forneça entradas mais úteis ao Efeito Dominó.
+
 \subsection{Suficiência e dependência das observações}
 
-O recorte bruto reúne 3.881 eventos no treino final, quantidade próxima da que
-restará após a purga e suficiente para planejar uma comparação inicial de
-classificadores tabulares sob um modelo global. Essa suficiência deverá ser
-confirmada com a contagem materializada. A estabilidade da proporção positiva e
-a presença das duas classes nas validações favorecem esse desenho. O volume,
-porém, não sustenta modelos independentes para cada relação, produto ou par de
-mercados, nem justifica inicialmente redes neurais ou buscas muito amplas de
-hiperparâmetros.
+O recorte bruto reúne 3.881 eventos no treino final e justificou a comparação
+inicial de classificadores tabulares sob um modelo global. A materialização das
+bases contextuais e a execução das duas validações confirmaram a viabilidade
+desse desenho. O volume, porém, não sustenta modelos independentes para cada
+relação, produto ou par de mercados, nem justifica inicialmente redes neurais
+ou buscas muito amplas de hiperparâmetros.
 
 As linhas não são completamente independentes. Antes da purga, o treino reúne
 2.211 choques de origem distintos distribuídos em 798 datas. Além disso, foram
@@ -1514,8 +1702,8 @@ base preserva cada destino como uma observação distinta e registra o
 \texttt{grupo\_choque} para identificar eventos que compartilham produto,
 origem e data. A separação temporal impede que o mesmo grupo atravesse treino e
 avaliação. A implementação do treinamento já calcula métricas complementares
-nas quais cada grupo possui o mesmo peso total; o efeito dessa ponderação sobre
-as conclusões somente poderá ser examinado depois da execução.
+nas quais cada grupo possui o mesmo peso total. Essa análise permanece como
+diagnóstico de sensibilidade e não substitui a métrica principal de seleção.
 
 \subsection{Limitações e próxima etapa}
 
@@ -1528,13 +1716,13 @@ como trabalho futuro avaliar calendários específicos por entreposto para trata
 feriados nacionais, estaduais e municipais sem remover datas em que um mercado
 tenha operado normalmente.
 
-A futura avaliação medirá a capacidade de prever a propagação entre relações
+A avaliação final medirá a capacidade de prever a propagação entre relações
 previamente selecionadas por Granger. Ela não demonstrará, por si só, que o
 mesmo desempenho se estende a pares sem relação significativa. Será necessário
 comparar posteriormente os resultados com um controle formado por relações não
 significativas ou datas embaralhadas.
 
-As duas validações internas passam a avaliar o pipeline de ponta a ponta. Em
+As duas validações internas avaliaram o pipeline de ponta a ponta. Em
 cada divisão, o pré-processamento aprende suas referências somente no treino,
 Granger refaz a seleção das relações e a correção FDR, e o Efeito Dominó
 recalcula os limites antes de caracterizar o período seguinte. O contexto final
@@ -1542,13 +1730,41 @@ permanece isolado: nenhum dado posterior a 31 de outubro de 2025 será usado par
 definir a rede, os limites, os atributos ou o modelo avaliado entre novembro de
 2025 e outubro de 2026.
 
-A cadeia da primeira validação foi executada até o Efeito Dominó. Os scripts de
-bases contextuais, seleção com duas origens e avaliação final separada foram
-preparados, mas a segunda cadeia e a nova seleção ainda precisam ser executadas.
-Após essa execução, as contagens pós-purga deverão substituir as quantidades
-brutas apresentadas na Tabela~\ref{tab:divisoes-modelagem}; somente então serão
-acrescentados os resultados comparativos. A avaliação oficial continuará
-pendente até o encerramento das decisões metodológicas.
+As duas cadeias contextuais e a seleção dos classificadores foram concluídas.
+Os experimentos de robustez do Granger também foram executados, mas nenhum
+superou simultaneamente o método bivariado nas duas validações. O próximo
+experimento deve concentrar-se na assimetria entre altas e quedas ou em mudança
+de regime, porque o objetivo operacional está voltado a aumentos de preço.
+Regularização e Granger neural não são prioritários diante da amostra efetiva.
+A avaliação oficial continuará pendente até o congelamento dessas decisões
+metodológicas.
+
+% ==========================================
+% CONCLUSÃO
+% ==========================================
+
+\section{Conclusão}
+
+O trabalho estabeleceu uma cadeia reproduzível entre a coleta, o
+pré-processamento, as séries temporais, o Granger, o Efeito Dominó e a
+modelagem supervisionada. Na execução de referência, 62 direções permaneceram
+significativas após FDR, e 39,1\% dos 4.815 eventos classificáveis apresentaram
+resposta posterior no destino. Nas validações contextuais, a regressão
+logística selecionada alcançou F1 médio de 0,6115 sem consultar o teste final.
+
+As análises adicionais mostraram que o limite de dez lags é suficiente no
+intervalo avaliado e que o preenchimento de três datas continua sendo a escolha
+mais adequada entre as alternativas comparadas. Diagnósticos residuais,
+previsão fora da amostra, condicionamento pelos demais mercados e estabilidade
+temporal revelaram, entretanto, que significância estatística não garante ganho
+preditivo recorrente. Por isso, essas extensões permanecem como evidência
+experimental e não alteram a entrada atual do Efeito Dominó.
+
+O próximo passo metodológico é avaliar respostas assimétricas ou mudanças de
+regime voltadas às altas de preço, sempre nas duas validações temporais. Somente
+depois do congelamento da configuração será permitido ajustar o modelo final e
+consultar uma única vez o período protegido de novembro de 2025 a outubro de
+2026.
 
 \clearpage
 \printbibliography[heading=bibintoc,title={Referências}]

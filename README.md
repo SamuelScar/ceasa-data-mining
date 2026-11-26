@@ -13,6 +13,7 @@ A documentação do projeto está organizada em:
 - [código-fonte do relatório](docs/relatorio/relatorio.tex);
 - [bibliografia](docs/relatorio/refs.bib);
 - [artigos utilizados](docs/artigos/);
+- [experimentos encerrados de Granger](experimentos/granger/README.md);
 - [apoio operacional do treinamento](treinamento/README.md).
 
 O relatório é a documentação principal da metodologia, dos critérios de
@@ -42,6 +43,13 @@ O serviço utilizará
 `resultados/preprocessamento/cotacoes_preprocessadas.sqlite` e gerará
 `resultados/granger/granger.sqlite`, preservando as séries, diagnósticos e todos
 os testes realizados.
+
+### Experimentos encerrados
+
+Os estudos de robustez dos lags, sensibilidade ao preenchimento, Granger
+condicional e estabilidade temporal ficam isolados em `experimentos/granger/`.
+Eles documentam decisões metodológicas e não são executados pelo
+`pipeline-completo`.
 
 ## Caracterização do Efeito Dominó
 

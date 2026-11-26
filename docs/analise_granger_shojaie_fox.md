@@ -2,10 +2,10 @@
 
 ## Estado do documento
 
-Este documento registra possibilidades metodológicas para o projeto. Ele não
-representa uma implementação aprovada e não altera o fluxo atual. As propostas
-devem ser avaliadas e implementadas gradualmente, preservando a execução
-estável como referência de comparação.
+Este documento registra as possibilidades metodológicas avaliadas e os
+experimentos concluídos. As implementações experimentais foram separadas em
+`experimentos/granger/`: elas não integram o pipeline principal nem alteram o
+fluxo atual. A execução estável permanece como referência de comparação.
 
 Data da análise: 18 de novembro de 2026.
 
@@ -203,6 +203,49 @@ estão distribuídas em segmentos.
 
 O primeiro modelo em rede deve selecionar uma ordem comum pelo BIC e não
 assumir dez lags automaticamente.
+
+### Cobertura nas validações temporais
+
+A cobertura foi reavaliada nas duas validações usando `ffill_limite=3`. Exigir
+os sete mercados simultaneamente é inviável: nenhum produto possui amostra
+utilizável depois de reservar dez lags. Portanto, o primeiro experimento
+condicional usa redes específicas por produto.
+
+A seleção é feita somente no treino da validação 1, antes de observar qualquer
+significância. A regra escolhe a maior rede com pelo menos seis observações por
+coeficiente da equação no lag máximo. Em empate, prevalecem a maior cobertura e
+a ordem lexical dos mercados. A rede escolhida em 2022–2023 é congelada para a
+validação 2.
+
+| Produto | Quantidade de mercados | Linhas utilizáveis em 2022–2023 |
+| --- | ---: | ---: |
+| Banana-prata | 3 | 305 |
+| Batata | 6 | 369 |
+| Batata-doce | 3 | 308 |
+| Beterraba | 3 | 313 |
+| Cebola | 4 | 311 |
+| Cenoura | 5 | 331 |
+| Morango | 6 | 446 |
+| Pimentão-verde | 3 | 305 |
+| Quiabo | 6 | 462 |
+| Tomate | 3 | 308 |
+
+Melão e pimentão não formaram uma rede mínima de três mercados com cobertura
+suficiente e permanecem fora deste experimento. O limite de seis observações
+por coeficiente é uma regra experimental de estabilidade numérica, não uma
+recomendação universal do artigo.
+
+### Resultado do condicionamento
+
+O experimento condicional reteve 3 de 11 relações bivariadas comparáveis na
+validação 1 e 8 de 27 na validação 2. Quatro relações permaneceram
+significativas nos dois períodos, resultando em Jaccard de `0,4`. Nenhuma
+relação foi simultaneamente robusta para altas nas duas validações.
+
+O condicionamento reduziu relações potencialmente indiretas, mas não resolveu
+a instabilidade temporal nem o ganho fora da amostra. Por isso, a etapa
+seguinte mede a frequência de seleção em janelas expansivas antes de considerar
+um estimador mais complexo.
 
 ### Limites da rede interna
 
@@ -453,7 +496,10 @@ As relações devem ser classificadas como:
 
 ### Etapa 3 — Estabilidade temporal
 
-Repetir os modelos por janelas e registrar:
+O executor repete os modelos em janelas expansivas com 18 meses
+iniciais, fechamentos trimestrais e avaliação nos seis meses seguintes. Esse
+período permite alcançar o mínimo de dez altas acima do percentil 90. Ele
+registra:
 
 - proporção de janelas em que cada relação aparece;
 - estabilidade da direção;
@@ -461,9 +507,25 @@ Repetir os modelos por janelas e registrar:
 - sinal e amplitude dos coeficientes;
 - sobreposição de Jaccard entre redes.
 
+A direção do efeito é resumida por uma resposta dinâmica unitária acumulada em
+cinco dias úteis. Uma relação precisa ser testável em pelo menos três janelas e
+atingir frequência mínima de 60% para FDR, resíduos adequados e resposta
+positiva. Os bancos intermediários são descartados depois da agregação.
+
+A execução processou três janelas na validação 1 e sete na validação 2 em
+`58,593` segundos. Cada contexto selecionou duas relações, com apenas uma em
+comum: `morango: maringa -> foz-do-iguacu`. O Jaccard foi `0,3333`, inferior
+aos `0,4` do Granger condicional final.
+
+A relação comum apresentou lag 1, resíduos adequados e resposta positiva em
+todas as janelas, mas não preservou ganho de RMSE, MAE nem das altas no teste
+completo da validação 2. A estabilidade estrutural isolada não foi suficiente
+para produzir uma entrada melhor para o Efeito Dominó.
+
 ### Etapa 4 — Regularização
 
-Se o VAR comum apresentar instabilidade ou excesso de parâmetros, avaliar:
+Se o VAR comum apresentar instabilidade ou excesso de parâmetros e houver
+amostra temporal suficiente para escolher a penalização, avaliar:
 
 - Group Lasso por relação;
 - HLag;
@@ -471,6 +533,10 @@ Se o VAR comum apresentar instabilidade ou excesso de parâmetros, avaliar:
 - bootstrap ou frequência de seleção.
 
 Em modelos penalizados, p-valores clássicos não devem ser a única evidência.
+No recorte atual, a pequena amostra efetiva torna a validação temporal da
+penalização frágil. Portanto, Group Lasso e HLag não são o próximo passo e só
+devem ser retomados se a análise de estabilidade demonstrar excesso de
+parâmetros com relações temporalmente recorrentes.
 
 ### Etapa 5 — Não linearidade
 
@@ -479,6 +545,33 @@ Somente depois das etapas anteriores:
 - Threshold VAR;
 - modelos assimétricos para altas e quedas;
 - MLP Granger esparsa como comparação exploratória.
+
+Os resultados lineares justificam investigar primeiro assimetria ou Threshold
+VAR, pois o objetivo operacional está concentrado em altas. Uma alternativa só
+será aceita se superar o Granger atual nas duas validações temporais; produzir
+mais relações significativas não é suficiente.
+
+## Registro de execução e testes
+
+As verificações realizadas nesta evolução foram:
+
+-  24 testes unitários de robustez de lags, sensibilidade ao preenchimento,
+  Granger condicional e estabilidade temporal aprovados em `0,337` segundos
+  depois da separação em `experimentos/granger/`;
+- sensibilidade a `ffill_limite` 0, 1 e 3 concluída nas duas validações;
+- Granger condicional concluído em aproximadamente 23 segundos;
+- estabilidade temporal concluída em `58,593` segundos, com dez janelas e uma
+  etapa de agregação;
+- criação confirmada de `estabilidade.sqlite`, `comparacao.json`,
+  `configuracao.json` e manifesto, totalizando `368 KB`;
+- descarte confirmado dos bancos temporários das janelas;
+- remoção dos quatro bancos `ffill_limite` 0 e 1 após a comparação, liberando
+  aproximadamente `80,7 MiB` sem remover os bancos escolhidos com limite 3;
+- proteção do teste final registrada nos manifestos.
+
+A bateria atual cobre também os quatro testes de estabilidade temporal e o
+descarte seletivo dos bancos alternativos. Todos os 24 testes passaram nos
+novos caminhos experimentais.
 
 ## Critérios para considerar uma melhoria real
 
@@ -495,11 +588,11 @@ Uma versão não é melhor somente por produzir mais relações significativas.
 | Classificação | F1, PR-AUC e MCC nas validações temporais |
 | Complexidade | Parâmetros, tempo de execução e perda de observações |
 
-A configuração estável atual registrou na validação:
+A execução de desenvolvimento `execucao-20261125-230051` registrou:
 
-- F1 médio: `0,5829075`;
-- PR-AUC média: `0,5808559`;
-- MCC médio: `0,2294662`.
+- F1 médio: `0,6115339`;
+- PR-AUC média: `0,5193795`;
+- MCC médio: `0,2359359`.
 
 Esses números são a referência histórica, mas deverão ser reinterpretados
 depois que a seleção de Granger e os limites forem recalculados dentro de cada
@@ -509,15 +602,16 @@ O teste final não deve ser consultado repetidamente para escolher alterações.
 O versionamento garante reprodutibilidade, mas não elimina o viés causado por
 usar o resultado final como critério de desenvolvimento.
 
-## Ordem recomendada para implementação futura
+## Estado da implementação
 
 ```text
-1. Recalcular Granger e limites dentro das divisões temporais
-2. Adicionar diagnósticos e sensibilidade do máximo de lags
-3. Implementar Network Granger condicional por produto
-4. Testar estabilidade temporal e sensibilidade ao preenchimento
-5. Avaliar Group Lasso ou HLag se o VAR comum ficar instável
-6. Avaliar não linearidade somente depois
+1. Concluído: recalcular Granger e limites nas divisões temporais
+2. Concluído: diagnósticos e sensibilidade do máximo de lags
+3. Concluído: sensibilidade ao preenchimento
+4. Concluído: Network Granger condicional por produto
+5. Concluído: frequência de seleção e direção em janelas expansivas
+6. Próximo: assimetria ou mudança de regime para altas
+7. Condicional: regularização somente com evidência de excesso de parâmetros
 ```
 
 Cada etapa deverá produzir uma nova execução versionada e ser comparada com a

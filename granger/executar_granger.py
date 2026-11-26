@@ -18,10 +18,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy.stats import f as distribuicao_f
+from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tsa.stattools import adfuller, kpss
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 MERCADOS_FIXOS = (
     "recife",
@@ -56,6 +57,9 @@ TIPOS_CONVERSAO_ACEITOS = (
 )
 
 MINIMO_RETORNOS_ESTACIONARIEDADE = 30
+MINIMO_OBSERVACOES_TESTE = 30
+MINIMO_OBSERVACOES_ALTAS_TESTE = 10
+PERCENTIL_ALTA_DESTINO = 0.90
 
 
 @dataclass(frozen=True)
@@ -154,6 +158,15 @@ def construir_parser() -> argparse.ArgumentParser:
         default=inteiro_ambiente("GRANGER_MAX_LAG", 10),
     )
     parser.add_argument(
+        "--max-lag-amostra",
+        type=int,
+        default=None,
+        help=(
+            "Maior defasagem reservada para fixar a amostra. Por padrão, "
+            "usa o mesmo valor de --max-lag."
+        ),
+    )
+    parser.add_argument(
         "--alpha",
         type=float,
         default=real_ambiente("GRANGER_ALPHA", 0.05),
@@ -172,6 +185,12 @@ def validar_argumentos(args: argparse.Namespace) -> None:
         raise ValueError("--ffill-limite não pode ser negativo")
     if args.max_lag < 1:
         raise ValueError("--max-lag deve ser pelo menos um")
+    if args.max_lag_amostra is None:
+        args.max_lag_amostra = args.max_lag
+    if args.max_lag_amostra < args.max_lag:
+        raise ValueError(
+            "--max-lag-amostra deve ser maior ou igual a --max-lag"
+        )
     if not 0 < args.alpha < 1:
         raise ValueError("--alpha deve estar entre zero e um")
 
@@ -344,7 +363,7 @@ def carregar_cotacoes(
     if quotes.empty:
         raise ValueError("o recorte fixado não encontrou cotações utilizáveis")
 
-    weekend = quotes["data_cotacao"].dt.weekday >= 5
+    weekend = quotes["data_cotacao"].dt.day_of_week >= 5
     weekend_count = int(weekend.sum())
     quotes = quotes.loc[~weekend].copy()
     return quotes, weekend_count
@@ -382,6 +401,10 @@ def identificar_segmentos(disponivel: pd.Series) -> pd.Series:
     return segmentos.astype("Int64")
 
 
+def preencher_lacunas(serie: pd.Series, limite: int) -> pd.Series:
+    return serie.ffill(limit=limite) if limite > 0 else serie.copy()
+
+
 def construir_series_temporais(
     daily: pd.DataFrame,
     market_metadata: pd.DataFrame,
@@ -403,8 +426,9 @@ def construir_series_temporais(
             frame["preco_kg_observado"] = subset[
                 "preco_kg_observado"
             ].reindex(calendar)
-            frame["preco_kg"] = frame["preco_kg_observado"].ffill(
-                limit=args.ffill_limite
+            frame["preco_kg"] = preencher_lacunas(
+                frame["preco_kg_observado"],
+                args.ffill_limite,
             )
 
             for column in (
@@ -689,46 +713,112 @@ def diagnosticar_par(
     return rows, passed
 
 
-def montar_matrizes_granger(
+def montar_matrizes_segmentos_treino(
     pair: pd.DataFrame,
     origin_column: str,
     destination_column: str,
     lag: int,
-    max_lag: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    restricted_parts: list[np.ndarray] = []
-    unrestricted_parts: list[np.ndarray] = []
-    target_parts: list[np.ndarray] = []
+    max_lag_amostra: int,
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    parts: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
 
     train = pair[pair["periodo"] == "treino"]
     for _, segment in train.groupby("segmento_par", sort=True):
         values = segment[[origin_column, destination_column]].dropna().to_numpy()
-        if len(values) <= max_lag:
+        if len(values) <= max_lag_amostra:
             continue
         origin = values[:, 0]
         destination = values[:, 1]
-        target = destination[max_lag:]
+        target = destination[max_lag_amostra:]
         destination_lags = np.column_stack(
             [
-                destination[max_lag - offset : len(destination) - offset]
+                destination[
+                    max_lag_amostra - offset : len(destination) - offset
+                ]
                 for offset in range(1, lag + 1)
             ]
         )
         origin_lags = np.column_stack(
             [
-                origin[max_lag - offset : len(origin) - offset]
+                origin[max_lag_amostra - offset : len(origin) - offset]
                 for offset in range(1, lag + 1)
             ]
         )
         intercept = np.ones((len(target), 1))
+        restricted = np.column_stack([intercept, destination_lags])
+        unrestricted = np.column_stack(
+            [intercept, destination_lags, origin_lags]
+        )
+        parts.append((target, restricted, unrestricted))
+
+    return parts
+
+
+def montar_matrizes_granger(
+    pair: pd.DataFrame,
+    origin_column: str,
+    destination_column: str,
+    lag: int,
+    max_lag_amostra: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    parts = montar_matrizes_segmentos_treino(
+        pair,
+        origin_column,
+        destination_column,
+        lag,
+        max_lag_amostra,
+    )
+
+    if not parts:
+        raise ValueError("nenhum segmento possui histórico suficiente para os lags")
+    return (
+        np.concatenate([target for target, _, _ in parts]),
+        np.vstack([restricted for _, restricted, _ in parts]),
+        np.vstack([unrestricted for _, _, unrestricted in parts]),
+    )
+
+
+def montar_matrizes_teste(
+    pair: pd.DataFrame,
+    origin_column: str,
+    destination_column: str,
+    lag: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    target_parts: list[np.ndarray] = []
+    restricted_parts: list[np.ndarray] = []
+    unrestricted_parts: list[np.ndarray] = []
+
+    for _, segment in pair.groupby("segmento_par", sort=True):
+        values = segment[
+            [origin_column, destination_column, "periodo"]
+        ].dropna()
+        if len(values) <= lag:
+            continue
+
+        origin = values[origin_column].to_numpy(dtype=float)
+        destination = values[destination_column].to_numpy(dtype=float)
+        periods = values["periodo"].to_numpy()
+        positions = np.flatnonzero(periods == "teste")
+        positions = positions[positions >= lag]
+        if not len(positions):
+            continue
+
+        target = destination[positions]
+        destination_lags = np.column_stack(
+            [destination[positions - offset] for offset in range(1, lag + 1)]
+        )
+        origin_lags = np.column_stack(
+            [origin[positions - offset] for offset in range(1, lag + 1)]
+        )
+        intercept = np.ones((len(target), 1))
+        target_parts.append(target)
         restricted_parts.append(np.column_stack([intercept, destination_lags]))
         unrestricted_parts.append(
             np.column_stack([intercept, destination_lags, origin_lags])
         )
-        target_parts.append(target)
 
     if not target_parts:
-        raise ValueError("nenhum segmento possui histórico suficiente para os lags")
+        raise ValueError("nenhum ponto de teste possui histórico suficiente")
     return (
         np.concatenate(target_parts),
         np.vstack(restricted_parts),
@@ -741,6 +831,7 @@ def avaliar_direcao_granger(
     origin_column: str,
     destination_column: str,
     max_lag: int,
+    max_lag_amostra: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], np.ndarray]:
     candidates: list[dict[str, Any]] = []
     coefficients: dict[int, np.ndarray] = {}
@@ -751,7 +842,7 @@ def avaliar_direcao_granger(
             origin_column,
             destination_column,
             lag,
-            max_lag,
+            max_lag_amostra,
         )
         n = len(target)
         k_unrestricted = unrestricted.shape[1]
@@ -800,6 +891,260 @@ def avaliar_direcao_granger(
     return candidates, selected, coefficients[selected["lag"]]
 
 
+def diagnosticar_residuos(
+    residual_restricted: np.ndarray,
+    residual_unrestricted: np.ndarray,
+    model_lag: int,
+    alpha: float,
+) -> dict[str, Any]:
+    n = len(residual_unrestricted)
+    diagnostic_lag = min(max(10, 2 * model_lag), n // 5, n - 1)
+    if diagnostic_lag <= model_lag:
+        return {
+            "status": "amostra_insuficiente",
+            "n_observacoes": n,
+            "lag_teste": None,
+            "estatistica_ljung_box_restrito": None,
+            "p_valor_ljung_box_restrito": None,
+            "estatistica_ljung_box_irrestrito": None,
+            "p_valor_ljung_box_irrestrito": None,
+            "sem_autocorrelacao_irrestrito": 0,
+            "observacao": "amostra insuficiente para o teste de Ljung-Box",
+        }
+
+    restricted = acorr_ljungbox(
+        residual_restricted,
+        lags=[diagnostic_lag],
+        model_df=model_lag,
+        return_df=True,
+    ).iloc[0]
+    unrestricted = acorr_ljungbox(
+        residual_unrestricted,
+        lags=[diagnostic_lag],
+        model_df=model_lag,
+        return_df=True,
+    ).iloc[0]
+    p_restricted = float(restricted["lb_pvalue"])
+    p_unrestricted = float(unrestricted["lb_pvalue"])
+    if not np.isfinite(p_restricted) or not np.isfinite(p_unrestricted):
+        raise ValueError("o teste de Ljung-Box retornou valor não finito")
+
+    return {
+        "status": "avaliado",
+        "n_observacoes": n,
+        "lag_teste": diagnostic_lag,
+        "estatistica_ljung_box_restrito": float(restricted["lb_stat"]),
+        "p_valor_ljung_box_restrito": p_restricted,
+        "estatistica_ljung_box_irrestrito": float(unrestricted["lb_stat"]),
+        "p_valor_ljung_box_irrestrito": p_unrestricted,
+        "sem_autocorrelacao_irrestrito": int(p_unrestricted >= alpha),
+        "observacao": "avaliado no maior segmento contínuo de treino",
+    }
+
+
+def calcular_ganho_percentual(referencia: float, candidato: float) -> float | None:
+    if referencia <= 0:
+        return None
+    return 100.0 * (referencia - candidato) / referencia
+
+
+def avaliacao_preditiva_sem_metricas(
+    status: str,
+    n_observacoes: int,
+    observacao: str,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "n_observacoes": n_observacoes,
+        "rmse_restrito": None,
+        "rmse_irrestrito": None,
+        "ganho_rmse_percentual": None,
+        "mae_restrito": None,
+        "mae_irrestrito": None,
+        "ganho_mae_percentual": None,
+        "melhora_rmse": 0,
+        "melhora_mae": 0,
+        "limite_alta_destino": None,
+        "n_observacoes_altas": 0,
+        "altas_avaliadas": 0,
+        "rmse_restrito_altas": None,
+        "rmse_irrestrito_altas": None,
+        "ganho_rmse_altas_percentual": None,
+        "mae_restrito_altas": None,
+        "mae_irrestrito_altas": None,
+        "ganho_mae_altas_percentual": None,
+        "melhora_rmse_altas": 0,
+        "melhora_mae_altas": 0,
+        "relacao_robusta": 0,
+        "observacao": observacao,
+    }
+
+
+def calcular_metricas_erros(
+    erro_restrito: np.ndarray,
+    erro_irrestrito: np.ndarray,
+    sufixo: str = "",
+) -> dict[str, Any]:
+    rmse_restrito = float(np.sqrt(np.mean(np.square(erro_restrito))))
+    rmse_irrestrito = float(np.sqrt(np.mean(np.square(erro_irrestrito))))
+    mae_restrito = float(np.mean(np.abs(erro_restrito)))
+    mae_irrestrito = float(np.mean(np.abs(erro_irrestrito)))
+    separador = "_" if sufixo else ""
+    complemento = f"{separador}{sufixo}"
+    return {
+        f"rmse_restrito{complemento}": rmse_restrito,
+        f"rmse_irrestrito{complemento}": rmse_irrestrito,
+        f"ganho_rmse{complemento}_percentual": calcular_ganho_percentual(
+            rmse_restrito,
+            rmse_irrestrito,
+        ),
+        f"mae_restrito{complemento}": mae_restrito,
+        f"mae_irrestrito{complemento}": mae_irrestrito,
+        f"ganho_mae{complemento}_percentual": calcular_ganho_percentual(
+            mae_restrito,
+            mae_irrestrito,
+        ),
+        f"melhora_rmse{complemento}": int(rmse_irrestrito < rmse_restrito),
+        f"melhora_mae{complemento}": int(mae_irrestrito < mae_restrito),
+    }
+
+
+def avaliar_previsao_fora_amostra(
+    pair: pd.DataFrame,
+    origin_column: str,
+    destination_column: str,
+    lag: int,
+    beta_restricted: np.ndarray,
+    beta_unrestricted: np.ndarray,
+    limite_alta_destino: float,
+) -> dict[str, Any]:
+    try:
+        target, restricted, unrestricted = montar_matrizes_teste(
+            pair,
+            origin_column,
+            destination_column,
+            lag,
+        )
+    except ValueError as error:
+        return avaliacao_preditiva_sem_metricas(
+            "amostra_insuficiente",
+            0,
+            str(error),
+        )
+
+    n = len(target)
+    if n < MINIMO_OBSERVACOES_TESTE:
+        return avaliacao_preditiva_sem_metricas(
+            "amostra_insuficiente",
+            n,
+            f"mínimo de {MINIMO_OBSERVACOES_TESTE} observações de teste",
+        )
+
+    error_restricted = target - restricted @ beta_restricted
+    error_unrestricted = target - unrestricted @ beta_unrestricted
+    metricas = calcular_metricas_erros(error_restricted, error_unrestricted)
+    mascara_altas = target > limite_alta_destino
+    n_altas = int(mascara_altas.sum())
+    altas_avaliadas = n_altas >= MINIMO_OBSERVACOES_ALTAS_TESTE
+    metricas_altas = (
+        calcular_metricas_erros(
+            error_restricted[mascara_altas],
+            error_unrestricted[mascara_altas],
+            "altas",
+        )
+        if altas_avaliadas
+        else {
+            "rmse_restrito_altas": None,
+            "rmse_irrestrito_altas": None,
+            "ganho_rmse_altas_percentual": None,
+            "mae_restrito_altas": None,
+            "mae_irrestrito_altas": None,
+            "ganho_mae_altas_percentual": None,
+            "melhora_rmse_altas": 0,
+            "melhora_mae_altas": 0,
+        }
+    )
+    return {
+        "status": "avaliado",
+        "n_observacoes": n,
+        **metricas,
+        "limite_alta_destino": limite_alta_destino,
+        "n_observacoes_altas": n_altas,
+        "altas_avaliadas": int(altas_avaliadas),
+        **metricas_altas,
+        "relacao_robusta": 0,
+        "observacao": (
+            "previsão um passo à frente com coeficientes do treino; "
+            "altas definidas pelo percentil do retorno de destino no treino"
+        ),
+    }
+
+
+def avaliar_diagnosticos_e_previsao(
+    pair: pd.DataFrame,
+    origin_column: str,
+    destination_column: str,
+    lag: int,
+    max_lag_amostra: int,
+    alpha: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    parts = montar_matrizes_segmentos_treino(
+        pair,
+        origin_column,
+        destination_column,
+        lag,
+        max_lag_amostra,
+    )
+    if not parts:
+        raise ValueError("nenhum segmento de treino disponível para diagnóstico")
+
+    target = np.concatenate([part[0] for part in parts])
+    restricted = np.vstack([part[1] for part in parts])
+    unrestricted = np.vstack([part[2] for part in parts])
+    beta_restricted = np.linalg.lstsq(restricted, target, rcond=None)[0]
+    beta_unrestricted = np.linalg.lstsq(unrestricted, target, rcond=None)[0]
+    limite_alta_destino = max(
+        0.0,
+        float(np.quantile(target, PERCENTIL_ALTA_DESTINO)),
+    )
+
+    longest_target, longest_restricted, longest_unrestricted = max(
+        parts,
+        key=lambda part: len(part[0]),
+    )
+    diagnostic = diagnosticar_residuos(
+        longest_target - longest_restricted @ beta_restricted,
+        longest_target - longest_unrestricted @ beta_unrestricted,
+        lag,
+        alpha,
+    )
+    prediction = avaliar_previsao_fora_amostra(
+        pair,
+        origin_column,
+        destination_column,
+        lag,
+        beta_restricted,
+        beta_unrestricted,
+        limite_alta_destino,
+    )
+    return diagnostic, prediction
+
+
+def relacao_eh_robusta(
+    significativo_fdr: bool,
+    diagnostico: dict[str, Any],
+    avaliacao: dict[str, Any],
+) -> bool:
+    return (
+        significativo_fdr
+        and diagnostico["status"] == "avaliado"
+        and bool(diagnostico["sem_autocorrelacao_irrestrito"])
+        and avaliacao["status"] == "avaliado"
+        and bool(avaliacao["melhora_rmse"])
+        and bool(avaliacao["melhora_mae"])
+    )
+
+
 def corrigir_benjamini_hochberg(p_values: list[float]) -> list[float]:
     if not p_values:
         return []
@@ -819,11 +1164,20 @@ def executar_testes_granger(
     pairs: pd.DataFrame,
     pair_frames: dict[int, pd.DataFrame],
     args: argparse.Namespace,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+]:
     diagnostic_rows: list[dict[str, Any]] = []
     result_rows: list[dict[str, Any]] = []
     lag_rows: list[dict[str, Any]] = []
     coefficient_rows: list[dict[str, Any]] = []
+    residual_diagnostic_rows: list[dict[str, Any]] = []
+    predictive_evaluation_rows: list[dict[str, Any]] = []
     result_id = 0
 
     eligible = pairs[pairs["elegivel"] == 1]
@@ -887,6 +1241,7 @@ def executar_testes_granger(
                     origin_column,
                     destination_column,
                     args.max_lag,
+                    args.max_lag_amostra,
                 )
             except (ValueError, np.linalg.LinAlgError) as error:
                 base["status"] = "erro_modelo"
@@ -940,6 +1295,41 @@ def executar_testes_granger(
                     }
                 )
 
+            try:
+                residual_diagnostic, predictive_evaluation = (
+                    avaliar_diagnosticos_e_previsao(
+                        pair,
+                        origin_column,
+                        destination_column,
+                        selected_lag,
+                        args.max_lag_amostra,
+                        args.alpha,
+                    )
+                )
+            except (ValueError, np.linalg.LinAlgError) as error:
+                residual_diagnostic = {
+                    "status": "erro",
+                    "n_observacoes": 0,
+                    "lag_teste": None,
+                    "estatistica_ljung_box_restrito": None,
+                    "p_valor_ljung_box_restrito": None,
+                    "estatistica_ljung_box_irrestrito": None,
+                    "p_valor_ljung_box_irrestrito": None,
+                    "sem_autocorrelacao_irrestrito": 0,
+                    "observacao": str(error),
+                }
+                predictive_evaluation = avaliacao_preditiva_sem_metricas(
+                    "erro",
+                    0,
+                    str(error),
+                )
+            residual_diagnostic_rows.append(
+                {"resultado_id": result_id, **residual_diagnostic}
+            )
+            predictive_evaluation_rows.append(
+                {"resultado_id": result_id, **predictive_evaluation}
+            )
+
     tested_indices = [
         index
         for index, row in enumerate(result_rows)
@@ -952,11 +1342,28 @@ def executar_testes_granger(
         result_rows[index]["q_valor_fdr"] = q_value
         result_rows[index]["significativo_fdr"] = int(q_value < args.alpha)
 
+    results_by_id = {row["id"]: row for row in result_rows}
+    diagnostics_by_id = {
+        row["resultado_id"]: row for row in residual_diagnostic_rows
+    }
+    for evaluation in predictive_evaluation_rows:
+        result = results_by_id[evaluation["resultado_id"]]
+        diagnostic = diagnostics_by_id[evaluation["resultado_id"]]
+        evaluation["relacao_robusta"] = int(
+            relacao_eh_robusta(
+                bool(result["significativo_fdr"]),
+                diagnostic,
+                evaluation,
+            )
+        )
+
     return (
         pd.DataFrame(diagnostic_rows),
         pd.DataFrame(result_rows),
         pd.DataFrame(lag_rows),
         pd.DataFrame(coefficient_rows),
+        pd.DataFrame(residual_diagnostic_rows),
+        pd.DataFrame(predictive_evaluation_rows),
     )
 
 
@@ -1118,6 +1525,58 @@ def criar_esquema(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (resultado_id) REFERENCES resultados_granger(id)
         );
 
+        CREATE TABLE diagnosticos_residuos (
+            resultado_id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL CHECK (
+                status IN ('avaliado', 'amostra_insuficiente', 'erro')
+            ),
+            n_observacoes INTEGER NOT NULL,
+            lag_teste INTEGER,
+            estatistica_ljung_box_restrito REAL,
+            p_valor_ljung_box_restrito REAL,
+            estatistica_ljung_box_irrestrito REAL,
+            p_valor_ljung_box_irrestrito REAL,
+            sem_autocorrelacao_irrestrito INTEGER NOT NULL CHECK (
+                sem_autocorrelacao_irrestrito IN (0, 1)
+            ),
+            observacao TEXT,
+            FOREIGN KEY (resultado_id) REFERENCES resultados_granger(id)
+        );
+
+        CREATE TABLE avaliacoes_preditivas (
+            resultado_id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL CHECK (
+                status IN ('avaliado', 'amostra_insuficiente', 'erro')
+            ),
+            n_observacoes INTEGER NOT NULL,
+            rmse_restrito REAL,
+            rmse_irrestrito REAL,
+            ganho_rmse_percentual REAL,
+            mae_restrito REAL,
+            mae_irrestrito REAL,
+            ganho_mae_percentual REAL,
+            melhora_rmse INTEGER NOT NULL CHECK (melhora_rmse IN (0, 1)),
+            melhora_mae INTEGER NOT NULL CHECK (melhora_mae IN (0, 1)),
+            limite_alta_destino REAL,
+            n_observacoes_altas INTEGER NOT NULL,
+            altas_avaliadas INTEGER NOT NULL CHECK (altas_avaliadas IN (0, 1)),
+            rmse_restrito_altas REAL,
+            rmse_irrestrito_altas REAL,
+            ganho_rmse_altas_percentual REAL,
+            mae_restrito_altas REAL,
+            mae_irrestrito_altas REAL,
+            ganho_mae_altas_percentual REAL,
+            melhora_rmse_altas INTEGER NOT NULL CHECK (
+                melhora_rmse_altas IN (0, 1)
+            ),
+            melhora_mae_altas INTEGER NOT NULL CHECK (
+                melhora_mae_altas IN (0, 1)
+            ),
+            relacao_robusta INTEGER NOT NULL CHECK (relacao_robusta IN (0, 1)),
+            observacao TEXT,
+            FOREIGN KEY (resultado_id) REFERENCES resultados_granger(id)
+        );
+
         CREATE TABLE resumo_granger (
             chave TEXT PRIMARY KEY,
             valor TEXT NOT NULL
@@ -1141,6 +1600,8 @@ def criar_indices_e_views(connection: sqlite3.Connection) -> None:
             ON resultados_granger(status);
         CREATE INDEX idx_resultados_fdr
             ON resultados_granger(significativo_fdr, q_valor_fdr);
+        CREATE INDEX idx_avaliacoes_robustas
+            ON avaliacoes_preditivas(relacao_robusta);
 
         CREATE VIEW series_treino AS
         SELECT * FROM series_temporais WHERE periodo = 'treino';
@@ -1158,6 +1619,34 @@ def criar_indices_e_views(connection: sqlite3.Connection) -> None:
         SELECT *
         FROM resultados_granger
         WHERE status = 'testado' AND significativo_fdr = 1;
+
+        CREATE VIEW relacoes_granger_robustas AS
+        SELECT
+            resultado.*,
+            diagnostico.n_observacoes AS n_observacoes_diagnostico,
+            diagnostico.lag_teste AS lag_ljung_box,
+            diagnostico.p_valor_ljung_box_irrestrito,
+            avaliacao.n_observacoes AS n_observacoes_teste,
+            avaliacao.rmse_restrito,
+            avaliacao.rmse_irrestrito,
+            avaliacao.ganho_rmse_percentual,
+            avaliacao.mae_restrito,
+            avaliacao.mae_irrestrito,
+            avaliacao.ganho_mae_percentual,
+            avaliacao.limite_alta_destino,
+            avaliacao.n_observacoes_altas,
+            avaliacao.rmse_restrito_altas,
+            avaliacao.rmse_irrestrito_altas,
+            avaliacao.ganho_rmse_altas_percentual,
+            avaliacao.mae_restrito_altas,
+            avaliacao.mae_irrestrito_altas,
+            avaliacao.ganho_mae_altas_percentual
+        FROM resultados_granger AS resultado
+        JOIN diagnosticos_residuos AS diagnostico
+          ON diagnostico.resultado_id = resultado.id
+        JOIN avaliacoes_preditivas AS avaliacao
+          ON avaliacao.resultado_id = resultado.id
+        WHERE avaliacao.relacao_robusta = 1;
         """
     )
 
@@ -1187,8 +1676,31 @@ def construir_resumo(
     pair_series: pd.DataFrame,
     diagnostics: pd.DataFrame,
     results: pd.DataFrame,
+    residual_diagnostics: pd.DataFrame,
+    predictive_evaluations: pd.DataFrame,
 ) -> dict[str, int]:
     tested = results[results["status"] == "testado"]
+    evaluated_residuals = (
+        residual_diagnostics[
+            residual_diagnostics["status"] == "avaliado"
+        ]
+        if not residual_diagnostics.empty
+        else residual_diagnostics
+    )
+    evaluated_predictions = (
+        predictive_evaluations[
+            predictive_evaluations["status"] == "avaliado"
+        ]
+        if not predictive_evaluations.empty
+        else predictive_evaluations
+    )
+    evaluated_highs = (
+        predictive_evaluations[
+            predictive_evaluations["altas_avaliadas"] == 1
+        ]
+        if not predictive_evaluations.empty
+        else predictive_evaluations
+    )
     stationary_pairs = (
         int(diagnostics.groupby("par_id")["estacionaria"].all().sum())
         if not diagnostics.empty
@@ -1213,6 +1725,39 @@ def construir_resumo(
         "direcoes_testadas": int(len(tested)),
         "significativas_sem_correcao": int(tested["significativo_bruto"].sum()),
         "significativas_fdr": int(tested["significativo_fdr"].sum()),
+        "diagnosticos_residuos_avaliados": int(len(evaluated_residuals)),
+        "residuos_irrestritos_sem_autocorrelacao": int(
+            evaluated_residuals["sem_autocorrelacao_irrestrito"].sum()
+            if not evaluated_residuals.empty
+            else 0
+        ),
+        "avaliacoes_fora_amostra": int(len(evaluated_predictions)),
+        "modelos_irrestritos_melhor_rmse": int(
+            evaluated_predictions["melhora_rmse"].sum()
+            if not evaluated_predictions.empty
+            else 0
+        ),
+        "modelos_irrestritos_melhor_mae": int(
+            evaluated_predictions["melhora_mae"].sum()
+            if not evaluated_predictions.empty
+            else 0
+        ),
+        "avaliacoes_altas": int(len(evaluated_highs)),
+        "modelos_irrestritos_melhor_rmse_altas": int(
+            evaluated_highs["melhora_rmse_altas"].sum()
+            if not evaluated_highs.empty
+            else 0
+        ),
+        "modelos_irrestritos_melhor_mae_altas": int(
+            evaluated_highs["melhora_mae_altas"].sum()
+            if not evaluated_highs.empty
+            else 0
+        ),
+        "relacoes_robustas": int(
+            predictive_evaluations["relacao_robusta"].sum()
+            if not predictive_evaluations.empty
+            else 0
+        ),
     }
 
 
@@ -1276,6 +1821,151 @@ def validar_saida(
     if bad_lags:
         raise RuntimeError("resultados de lag ou FDR inconsistentes")
 
+    inconsistent_samples = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM (
+            SELECT resultado_id
+            FROM resultados_lags
+            GROUP BY resultado_id
+            HAVING COUNT(DISTINCT n_observacoes) <> 1
+        )
+        """
+    ).fetchone()[0]
+    if inconsistent_samples:
+        raise RuntimeError("os lags de uma direção usam amostras diferentes")
+
+    missing_evaluations = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM resultados_granger AS resultado
+        LEFT JOIN diagnosticos_residuos AS diagnostico
+          ON diagnostico.resultado_id = resultado.id
+        LEFT JOIN avaliacoes_preditivas AS avaliacao
+          ON avaliacao.resultado_id = resultado.id
+        WHERE resultado.status = 'testado'
+          AND (
+              diagnostico.resultado_id IS NULL
+              OR avaliacao.resultado_id IS NULL
+          )
+        """
+    ).fetchone()[0]
+    if missing_evaluations:
+        raise RuntimeError("direções testadas sem diagnóstico ou avaliação preditiva")
+
+    invalid_diagnostics = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM diagnosticos_residuos
+        WHERE status = 'avaliado'
+          AND (
+              lag_teste IS NULL
+              OR p_valor_ljung_box_restrito IS NULL
+              OR p_valor_ljung_box_restrito NOT BETWEEN 0 AND 1
+              OR p_valor_ljung_box_irrestrito IS NULL
+              OR p_valor_ljung_box_irrestrito NOT BETWEEN 0 AND 1
+          )
+        """
+    ).fetchone()[0]
+    if invalid_diagnostics:
+        raise RuntimeError("diagnósticos de resíduos inconsistentes")
+
+    invalid_predictions = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM avaliacoes_preditivas
+        WHERE status = 'avaliado'
+          AND (
+              n_observacoes < ?
+              OR rmse_restrito IS NULL
+              OR rmse_irrestrito IS NULL
+              OR ganho_rmse_percentual IS NULL
+              OR mae_restrito IS NULL
+              OR mae_irrestrito IS NULL
+              OR ganho_mae_percentual IS NULL
+              OR melhora_rmse <> CASE
+                  WHEN rmse_irrestrito < rmse_restrito THEN 1 ELSE 0
+              END
+              OR melhora_mae <> CASE
+                  WHEN mae_irrestrito < mae_restrito THEN 1 ELSE 0
+              END
+          )
+        """,
+        (MINIMO_OBSERVACOES_TESTE,),
+    ).fetchone()[0]
+    if invalid_predictions:
+        raise RuntimeError("avaliações preditivas inconsistentes")
+
+    invalid_high_predictions = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM avaliacoes_preditivas
+        WHERE status = 'avaliado'
+          AND (
+              limite_alta_destino IS NULL
+              OR n_observacoes_altas < 0
+              OR altas_avaliadas <> CASE
+                  WHEN n_observacoes_altas >= ? THEN 1 ELSE 0
+              END
+              OR (
+                  altas_avaliadas = 1
+                  AND (
+                      rmse_restrito_altas IS NULL
+                      OR rmse_irrestrito_altas IS NULL
+                      OR ganho_rmse_altas_percentual IS NULL
+                      OR mae_restrito_altas IS NULL
+                      OR mae_irrestrito_altas IS NULL
+                      OR ganho_mae_altas_percentual IS NULL
+                      OR melhora_rmse_altas <> CASE
+                          WHEN rmse_irrestrito_altas < rmse_restrito_altas
+                          THEN 1 ELSE 0
+                      END
+                      OR melhora_mae_altas <> CASE
+                          WHEN mae_irrestrito_altas < mae_restrito_altas
+                          THEN 1 ELSE 0
+                      END
+                  )
+              )
+              OR (
+                  altas_avaliadas = 0
+                  AND (
+                      rmse_restrito_altas IS NOT NULL
+                      OR rmse_irrestrito_altas IS NOT NULL
+                      OR mae_restrito_altas IS NOT NULL
+                      OR mae_irrestrito_altas IS NOT NULL
+                      OR melhora_rmse_altas <> 0
+                      OR melhora_mae_altas <> 0
+                  )
+              )
+          )
+        """,
+        (MINIMO_OBSERVACOES_ALTAS_TESTE,),
+    ).fetchone()[0]
+    if invalid_high_predictions:
+        raise RuntimeError("avaliações preditivas das altas inconsistentes")
+
+    invalid_robust_relations = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM avaliacoes_preditivas AS avaliacao
+        JOIN resultados_granger AS resultado
+          ON resultado.id = avaliacao.resultado_id
+        JOIN diagnosticos_residuos AS diagnostico
+          ON diagnostico.resultado_id = resultado.id
+        WHERE avaliacao.relacao_robusta = 1
+          AND (
+              resultado.significativo_fdr <> 1
+              OR diagnostico.status <> 'avaliado'
+              OR diagnostico.sem_autocorrelacao_irrestrito <> 1
+              OR avaliacao.status <> 'avaliado'
+              OR avaliacao.melhora_rmse <> 1
+              OR avaliacao.melhora_mae <> 1
+          )
+        """
+    ).fetchone()[0]
+    if invalid_robust_relations:
+        raise RuntimeError("relações robustas inconsistentes")
+
 
 def executar(args: argparse.Namespace) -> Path:
     database = args.database.resolve()
@@ -1317,11 +2007,14 @@ def executar(args: argparse.Namespace) -> Path:
             flush=True,
         )
         print("Executando diagnósticos e testes de Granger...", flush=True)
-        diagnostics, results, lags, coefficients = executar_testes_granger(
-            pairs,
-            pair_frames,
-            args,
-        )
+        (
+            diagnostics,
+            results,
+            lags,
+            coefficients,
+            residual_diagnostics,
+            predictive_evaluations,
+        ) = executar_testes_granger(pairs, pair_frames, args)
 
         parameters = {
             "alpha": args.alpha,
@@ -1329,13 +2022,31 @@ def executar(args: argparse.Namespace) -> Path:
             "data_corte_treino": args.data_corte_treino.isoformat(),
             "data_fim_teste": args.data_fim_teste.isoformat(),
             "data_inicio": args.data_inicio.isoformat(),
+            "diagnostico_residuos": (
+                "Ljung-Box no maior segmento contínuo de treino; "
+                "H0 de ausência de autocorrelação"
+            ),
             "estacionariedade": "ADF p<alpha e KPSS p>alpha no maior segmento contínuo",
             "ffill_limite": args.ffill_limite,
             "max_lag": args.max_lag,
+            "max_lag_amostra": args.max_lag_amostra,
             "mercados": list(MERCADOS_FIXOS),
             "min_dias_comuns_observados": args.min_dias_comuns,
+            "min_observacoes_teste": MINIMO_OBSERVACOES_TESTE,
+            "altas_destino": (
+                f"retorno acima do maior entre zero e o percentil "
+                f"{PERCENTIL_ALTA_DESTINO:.2f} do destino no treino"
+            ),
+            "min_observacoes_altas_teste": MINIMO_OBSERVACOES_ALTAS_TESTE,
             "produtos": list(PRODUTOS_FIXOS),
-            "selecao_lag": "BIC em amostra fixa pelo max_lag",
+            "previsao_fora_amostra": (
+                "um passo à frente com coeficientes fixados no treino"
+            ),
+            "relacao_robusta": (
+                "FDR significativo, resíduo irrestrito sem autocorrelação e "
+                "melhora simultânea de RMSE e MAE fora da amostra"
+            ),
+            "selecao_lag": "BIC em amostra fixa pelo max_lag_amostra",
             "tipos_conversao": list(TIPOS_CONVERSAO_ACEITOS),
         }
         summary = construir_resumo(
@@ -1347,6 +2058,8 @@ def executar(args: argparse.Namespace) -> Path:
             pair_series,
             diagnostics,
             results,
+            residual_diagnostics,
+            predictive_evaluations,
         )
 
         temporary_handle = tempfile.NamedTemporaryFile(
@@ -1396,6 +2109,16 @@ def executar(args: argparse.Namespace) -> Path:
         gravar_dataframe(target, "resultados_granger", results)
         gravar_dataframe(target, "resultados_lags", lags)
         gravar_dataframe(target, "coeficientes_granger", coefficients)
+        gravar_dataframe(
+            target,
+            "diagnosticos_residuos",
+            residual_diagnostics,
+        )
+        gravar_dataframe(
+            target,
+            "avaliacoes_preditivas",
+            predictive_evaluations,
+        )
         target.executemany(
             "INSERT INTO resumo_granger (chave, valor) VALUES (?, ?)",
             [(key, str(value)) for key, value in sorted(summary.items())],
