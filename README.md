@@ -47,9 +47,18 @@ os testes realizados.
 ### Experimentos encerrados
 
 Os estudos de robustez dos lags, sensibilidade ao preenchimento, Granger
-condicional e estabilidade temporal ficam isolados em `experimentos/granger/`.
-Eles documentam decisões metodológicas e não são executados pelo
-`pipeline-completo`.
+condicional, estabilidade temporal, assimetria, mudança de regime, inferência
+HC3/HAC e alternativas de montagem das séries ficam isolados em
+`experimentos/granger/`. Eles documentam decisões metodológicas e não são
+executados pelo `pipeline-completo`.
+
+As duas validações mantiveram como método oficial o Granger bivariado clássico,
+com 400 dias comuns observados, preenchimento limitado a três dias úteis, até
+10 lags sobre amostra fixa, seleção por BIC e FDR global. Essa configuração é
+passada explicitamente pelos pipelines versionados; HAC permanece somente como
+análise de sensibilidade. Agregação semanal, filtros de qualidade e calendário
+operacional derivado da própria CEASA também foram avaliados, mas não
+produziram relações robustas comuns às duas validações.
 
 ## Caracterização do Efeito Dominó
 

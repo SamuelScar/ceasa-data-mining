@@ -14,8 +14,10 @@ from time import perf_counter
 from executar_pipeline_versionado import (
     ENTRADA_BRUTA,
     FUSO_HORARIO_VERSAO,
+    GRANGER_METODO_SELECIONADO,
     Contexto,
     Etapa,
+    argumentos_granger_selecionado,
     agora_iso,
     gravar_manifesto,
     metadados_artefatos,
@@ -145,6 +147,7 @@ def construir_etapas(
                 CONTEXTO_FINAL.corte_treino,
                 "--data-fim-teste",
                 CONTEXTO_FINAL.fim_avaliacao,
+                *argumentos_granger_selecionado(),
             ],
         ),
         Etapa(
@@ -236,6 +239,7 @@ def executar() -> int:
             "corte_treino": CONTEXTO_FINAL.corte_treino,
             "fim_avaliacao": CONTEXTO_FINAL.fim_avaliacao,
         },
+        "metodologia_granger": GRANGER_METODO_SELECIONADO,
         "codigo": registrar_codigo(),
         "entrada": {
             "caminho": str(ENTRADA_BRUTA),

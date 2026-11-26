@@ -1521,6 +1521,49 @@ ela não preservou melhora de RMSE, MAE nem das métricas de altas no teste
 completo da segunda validação. Assim, o filtro temporal também não substitui o
 método principal.
 
+O experimento assimétrico separou retornos positivos e negativos da origem.
+Foram encontradas 9 relações após FDR na primeira validação e 13 na segunda.
+Três relações apresentaram robustez específica nas altas em cada período. Duas
+foram comuns às validações: batata de Curitiba para Cascavel e batata de
+Londrina para Cascavel, ambas com lag de um dia útil. Esse resultado indicou
+ganho localizado, mas não autorizou a substituição do método bivariado sem
+verificar os consumidores seguintes.
+
+No Efeito Dominó, as relações assimétricas reduziram os eventos classificáveis
+de 198 para 180 na primeira validação e de 480 para 171 na segunda. A proporção
+de efeitos confirmados caiu, respectivamente, de 41,41\% para 40,56\% e de
+39,38\% para 39,18\%. A comparação dos classificadores congelou o modelo, os
+hiperparâmetros e o limiar escolhidos pela referência bivariada. Os resultados
+estão na Tabela~\ref{tab:modelagem-assimetrica}.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Comparação entre as modelagens bivariada e assimétrica.}
+    \label{tab:modelagem-assimetrica}
+    \small
+    \begin{tabular}{llrrr}
+        \toprule
+        \textbf{Validação} & \textbf{Método} & \textbf{F1} &
+        \textbf{PR-AUC} & \textbf{MCC} \\
+        \midrule
+        1 & Bivariado & 0,6396 & 0,5282 & 0,3092 \\
+        1 & Assimétrico & 0,5890 & 0,5548 & 0,2534 \\
+        2 & Bivariado & 0,5835 & 0,5106 & 0,1627 \\
+        2 & Assimétrico & 0,5882 & 0,5079 & 0,2090 \\
+        \bottomrule
+    \end{tabular}
+
+    \par\smallskip
+    \footnotesize
+    Fonte: experimento de modelagem assimétrica executado em 26 de novembro de
+    2026, sem consulta ao teste final.
+\end{table}
+
+Somente PR-AUC melhorou na primeira validação; na segunda, F1 e MCC melhoraram,
+mas PR-AUC piorou. Como nenhuma alternativa superou as três métricas nas duas
+validações e houve perda de 64,4\% das linhas no segundo período, a decisão foi
+manter o Granger bivariado.
+
 \subsection{Validação da implementação experimental}
 
 Uma bateria de 24 testes unitários de robustez dos lags, sensibilidade ao
@@ -1530,7 +1573,14 @@ também o descarte seletivo dos bancos alternativos e valida os novos caminhos e
 importações. A execução condicional completa terminou em aproximadamente 23
 segundos. A estabilidade temporal processou dez janelas e uma etapa de
 agregação em 58,593 segundos, preservando 368~KB de resultados compactos e
-descartando os bancos intermediários.
+descartando os bancos intermediários. Outros quatro testes do Granger
+assimétrico, três do Efeito Dominó assimétrico e três da comparação de modelagem
+também foram aprovados. Os três testes do diagnóstico de regimes passaram em
+0,022 segundo e os cinco testes da inferência robusta em 0,017 segundo,
+e os cinco testes de montagem das séries em 0,164 segundo, totalizando 47
+testes registrados. A comparação completa da modelagem terminou em 172,597
+segundos. A comparação diária e semanal levou aproximadamente 44 segundos e o
+calendário operacional derivado da CEASA, aproximadamente 54 segundos.
 
 \subsection{Resultados da caracterização do Efeito Dominó}
 
@@ -1658,9 +1708,10 @@ apresenta as médias das duas validações temporais.
 
 Essas métricas pertencem ao desenvolvimento e ainda usam as relações
 bivariadas significativas após FDR. Os experimentos condicional e temporal não
-forneceram evidência suficiente para trocar essa entrada. O ajuste final e a
-consulta única ao período de novembro de 2025 a outubro de 2026 permanecem
-pendentes.
+forneceram evidência suficiente para trocar essa entrada. A comparação
+assimétrica apresentada anteriormente também preservou a referência bivariada.
+O ajuste final e a consulta única ao período de novembro de 2025 a outubro de
+2026 permanecem pendentes.
 
 % ==========================================
 % DISCUSSÃO
@@ -1711,10 +1762,11 @@ A decisão de preservar cotações de fim de semana no pré-processamento e
 desconsiderá-las somente nas séries temporais é provisória. Depois da análise
 dos demais efeitos, essa regra será reavaliada considerando as necessidades de
 todas as etapas. Até essa revisão, os registros não serão excluídos da base
-pré-processada, pois podem ser válidos para outras análises. Também permanece
-como trabalho futuro avaliar calendários específicos por entreposto para tratar
-feriados nacionais, estaduais e municipais sem remover datas em que um mercado
-tenha operado normalmente.
+pré-processada, pois podem ser válidos para outras análises. Um calendário
+operacional por mercado, inferido exclusivamente das cotações da CEASA, já foi
+avaliado para evitar inserir feriados e fechamentos na linha temporal. Ele
+melhorou parcialmente a estabilidade, mas não produziu relações robustas nas
+duas validações e, por isso, não substituiu o calendário oficial.
 
 A avaliação final medirá a capacidade de prever a propagação entre relações
 previamente selecionadas por Granger. Ela não demonstrará, por si só, que o
@@ -1732,12 +1784,36 @@ definir a rede, os limites, os atributos ou o modelo avaliado entre novembro de
 
 As duas cadeias contextuais e a seleção dos classificadores foram concluídas.
 Os experimentos de robustez do Granger também foram executados, mas nenhum
-superou simultaneamente o método bivariado nas duas validações. O próximo
-experimento deve concentrar-se na assimetria entre altas e quedas ou em mudança
-de regime, porque o objetivo operacional está voltado a aumentos de preço.
-Regularização e Granger neural não são prioritários diante da amostra efetiva.
-A avaliação oficial continuará pendente até o congelamento dessas decisões
-metodológicas.
+superou simultaneamente o método bivariado nas duas validações. A assimetria
+também foi avaliada de ponta a ponta e não produziu ganho consistente. O
+diagnóstico de regimes encontrou heterocedasticidade em 35 de 84 direções na
+primeira validação e em 70 de 182 na segunda, além de caudas pesadas em 83 e
+182 direções. Embora nove quebras CUSUM e cinco configurações threshold viáveis
+tenham aparecido na segunda validação, nenhuma evidência equivalente ocorreu na
+primeira, e nenhuma configuração combinou $\Delta BIC \geq 6$ com melhora de
+RMSE e MAE nos dois períodos. Threshold VAR foi descartado.
+
+O experimento seguinte recalculou os testes conjuntos com covariâncias HAC de
+Newey--West segmentada e HC3, mantendo lags, coeficientes OLS, amostras e
+previsões do Granger bivariado. HAC reteve 10 relações na primeira validação e
+22 na segunda, contra 11 e 30 da inferência clássica. Nove relações HAC foram
+significativas nos dois períodos, elevando o Jaccard de 0,2812 para 0,3913.
+
+Uma relação, batata de Curitiba para Londrina, foi robusta nas altas por HAC nos
+dois períodos, mas não foi confirmada por HC3 na primeira validação
+($q=0,05753$). Como o limite de 0,05 e a confirmação pelos dois métodos foram
+definidos antes da execução, não se alterou o critério depois do resultado.
+Nenhuma relação avançou para o Efeito Dominó e a decisão foi manter a inferência
+clássica. Dados externos, reamostragem bootstrap, regularização e Granger neural
+permanecem fora do escopo atual.
+
+As alternativas de montagem das séries também foram comparadas sem consultar o
+teste final. A agregação semanal aumentou as relações significativas comuns de
+9 para 25 e o Jaccard de 0,2812 para 0,4545, mas não preservou nenhuma relação
+robusta nas duas validações. O calendário operacional derivado da CEASA elevou
+as relações comuns para 13 e o Jaccard para 0,3171, também sem robustez comum.
+Esses resultados encerraram a análise atual das séries e mantiveram a
+construção diária oficial.
 
 % ==========================================
 % CONCLUSÃO
@@ -1760,11 +1836,18 @@ temporal revelaram, entretanto, que significância estatística não garante gan
 preditivo recorrente. Por isso, essas extensões permanecem como evidência
 experimental e não alteram a entrada atual do Efeito Dominó.
 
-O próximo passo metodológico é avaliar respostas assimétricas ou mudanças de
-regime voltadas às altas de preço, sempre nas duas validações temporais. Somente
-depois do congelamento da configuração será permitido ajustar o modelo final e
-consultar uma única vez o período protegido de novembro de 2025 a outubro de
-2026.
+O experimento assimétrico encontrou duas relações de batata robustas nas altas,
+mas perdeu cobertura e não melhorou simultaneamente F1, PR-AUC e MCC nas duas
+validações. O método bivariado foi mantido. O diagnóstico subsequente não
+sustentou Threshold VAR, mas confirmou heterocedasticidade e caudas pesadas em
+parte relevante das direções. A comparação entre a inferência HAC segmentada, a
+clássica e a sensibilidade HC3 também foi concluída: HAC aumentou a estabilidade,
+mas nenhuma relação cumpriu o critério completo de avanço. A investigação
+das séries semanais e do calendário operacional também não produziu relações
+robustas comuns às duas validações. A investigação metodológica atual do
+Granger e das séries foi encerrada, e o método diário bivariado clássico foi
+congelado. A próxima etapa retorna ao Efeito Dominó sem consultar o período
+protegido de novembro de 2025 a outubro de 2026.
 
 \clearpage
 \printbibliography[heading=bibintoc,title={Referências}]

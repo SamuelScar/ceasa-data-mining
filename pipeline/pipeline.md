@@ -18,6 +18,20 @@ Os cortes são fixos e passados diretamente aos scripts:
 - validação 1: treino até `2023-12-31` e avaliação até `2024-12-31`;
 - validação 2: treino até `2024-12-31` e avaliação até `2025-10-31`.
 
+A etapa de Granger também está congelada depois dos experimentos metodológicos:
+
+- Granger bivariado clássico;
+- mínimo de 400 dias comuns realmente observados;
+- preenchimento de lacunas limitado a três dias úteis;
+- lags de 1 a 10, todos comparados sobre a amostra reservada para 10 lags;
+- seleção do lag por BIC;
+- `alpha=0,05` e Benjamini--Hochberg global;
+- Efeito Dominó alimentado pelas relações significativas após FDR.
+
+Esses valores são passados explicitamente pelos dois pipelines e não podem ser
+alterados por um `.env`. O serviço individual `granger` continua configurável
+para permitir auditoria e reprodução dos experimentos.
+
 Execute:
 
 ```bash

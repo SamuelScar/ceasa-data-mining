@@ -7,7 +7,8 @@ experimentos concluídos. As implementações experimentais foram separadas em
 `experimentos/granger/`: elas não integram o pipeline principal nem alteram o
 fluxo atual. A execução estável permanece como referência de comparação.
 
-Data da análise: 18 de novembro de 2026.
+Data da análise: 18 de novembro de 2026. Última atualização: 26 de novembro de
+2026.
 
 ## Referência principal
 
@@ -35,6 +36,12 @@ As três melhorias mais relevantes para o projeto são:
 Não é recomendável começar por Granger neural. Primeiro é necessário garantir
 uma validação temporal completa, examinar a estabilidade das relações e
 comparar o modelo bivariado com uma rede condicional.
+
+Depois dessas verificações, o Granger assimétrico foi a primeira alternativa a
+apresentar relações robustas nas altas nas duas validações. A comparação de
+ponta a ponta mostrou, porém, perda de cobertura e ausência de melhora
+consistente na classificação. O método assimétrico não substitui o Granger
+bivariado.
 
 ## Interpretação correta de causalidade de Granger
 
@@ -307,11 +314,14 @@ O lag é selecionado pelo BIC e o teste F é calculado nos mesmos dados. O p-val
 clássico não representa explicitamente a incerteza gerada pela busca entre
 vários lags.
 
-As alternativas a avaliar são:
+As alternativas metodológicas identificadas foram:
 
-- bootstrap que repita a seleção e o teste;
 - seleção em uma janela e confirmação em outra;
 - ordem comum do sistema definida antes dos testes condicionais.
+
+Bootstrap não será usado nesta etapa por ampliar a complexidade e o custo do
+experimento. A confirmação em períodos temporais distintos já foi incorporada
+ao protocolo.
 
 ## Métodos automáticos apresentados pelo artigo
 
@@ -380,14 +390,19 @@ Na base de treino, algumas proporções aproximadas de preços preenchidos são:
 - batata-doce: 11,8%;
 - beterraba: 11,3%.
 
-Isso exige um estudo de sensibilidade com:
+O estudo de sensibilidade executado comparou:
 
 - nenhum preenchimento;
 - preenchimento de um dia;
 - preenchimento de três dias, como no método atual;
 - segmentos com observações efetivas;
-- calendários específicos, se disponíveis;
-- agregação semanal apenas como comparação de robustez.
+- um calendário operacional inferido exclusivamente das cotações da CEASA;
+- agregação semanal como comparação de robustez.
+
+A agregação semanal e o calendário operacional aumentaram a estabilidade das
+relações significativas, mas nenhuma alternativa preservou relações robustas
+nas duas validações. Portanto, o calendário diário de segunda a sexta com
+preenchimento limitado a três dias permanece no método oficial.
 
 Métodos estruturais para frequências mistas exigem hipóteses fortes e não são a
 primeira opção para este projeto.
@@ -413,20 +428,62 @@ Antes de Granger neural, é mais apropriado avaliar:
 Uma hipótese assimétrica é especialmente pertinente porque o Efeito Dominó
 procura predominantemente altas de preços.
 
-## Diagnósticos ainda ausentes
+### Resultado do Granger assimétrico
 
-O modelo atual calcula OLS, soma de resíduos, estatística F, p-valor e BIC. Não
-foram identificados diagnósticos explícitos de:
+O experimento separou o retorno da origem em parcelas positiva e negativa. O
+modelo restrito contém o histórico do destino e as defasagens negativas da
+origem; o irrestrito acrescenta as defasagens positivas. Assim, o teste F mede
+especificamente se as altas da origem fornecem informação adicional depois de
+controlar as quedas.
 
-- autocorrelação residual;
+O mesmo protocolo foi executado nos bancos `ffill_limite=3` das duas
+validações, sem construir ou consultar o teste final. Foram processadas 84
+direções na validação 1 e 182 na validação 2, sem erros de modelo. O experimento
+registrou:
+
+| Métrica | Validação 1 | Validação 2 |
+| --- | ---: | ---: |
+| Significativas após FDR | 9 | 13 |
+| Significativas com resposta positiva | 8 | 12 |
+| Robustas nas métricas gerais | 0 | 1 |
+| Robustas nas altas | 3 | 3 |
+
+Cinco relações foram significativas nos dois períodos. Duas também mantiveram
+resposta positiva, resíduos adequados e melhora de RMSE e MAE nas altas:
+
+| Relação | Lag | Ganho RMSE nas altas V1/V2 | Ganho MAE nas altas V1/V2 |
+| --- | ---: | ---: | ---: |
+| `batata: curitiba -> cascavel` | 1 | 0,13% / 2,64% | 1,32% / 3,74% |
+| `batata: londrina -> cascavel` | 1 | 1,38% / 5,23% | 5,26% / 7,39% |
+
+O Jaccard das relações robustas nas altas foi `0,5`. No Granger condicional,
+nenhuma relação havia atendido esse critério nas duas validações. Portanto,
+houve melhora específica para antecipar altas, com evidência mais forte em
+`batata: londrina -> cascavel`. Como a validação 1 não produziu relação robusta
+nas métricas gerais, não se deve apresentar o resultado como melhora global de
+previsão.
+
+A decisão e sua procedência foram congeladas em
+`experimentos/granger/selecao_assimetrica_congelada.json`. Essa lista registra
+a evidência observada, mas não pode ser usada para medir novamente os mesmos
+períodos como se fosse uma seleção independente.
+
+## Diagnósticos adicionais
+
+O modelo atual já registra Ljung--Box para autocorrelação residual e ganho
+preditivo fora da amostra, além de OLS, soma de resíduos, estatística F,
+p-valor e BIC. O pipeline principal ainda não registra diagnósticos explícitos
+de:
+
 - estabilidade do VAR;
 - heterocedasticidade;
 - caudas pesadas;
 - influência de observações extremas;
-- estabilidade dos coeficientes;
-- ganho preditivo fora da amostra.
+- estabilidade dos coeficientes.
 
-Uma futura implementação deve registrar, quando aplicável:
+O módulo experimental de mudança de regime calculou esses indicadores nas duas
+validações e sustentou a escolha da inferência robusta como etapa seguinte.
+Quando aplicável, devem ser registrados:
 
 ```text
 ordem selecionada
@@ -436,7 +493,7 @@ estabilidade das raízes do VAR
 distribuição e variância dos resíduos
 erro preditivo fora da amostra
 diferença entre modelos restrito e irrestrito
-frequência da relação em bootstrap e janelas temporais
+frequência da relação em janelas temporais
 ```
 
 Como a definição de Granger é preditiva, o ganho fora da amostra deve ser
@@ -529,27 +586,41 @@ amostra temporal suficiente para escolher a penalização, avaliar:
 
 - Group Lasso por relação;
 - HLag;
-- seleção da penalização por validação temporal;
-- bootstrap ou frequência de seleção.
+- seleção da penalização por validação temporal.
 
 Em modelos penalizados, p-valores clássicos não devem ser a única evidência.
 No recorte atual, a pequena amostra efetiva torna a validação temporal da
-penalização frágil. Portanto, Group Lasso e HLag não são o próximo passo e só
-devem ser retomados se a análise de estabilidade demonstrar excesso de
-parâmetros com relações temporalmente recorrentes.
+penalização frágil. Portanto, Group Lasso, HLag e bootstrap permanecem fora do
+escopo atual.
 
 ### Etapa 5 — Não linearidade
 
-Somente depois das etapas anteriores:
+O primeiro experimento desta etapa, o modelo assimétrico para altas e quedas,
+foi concluído. Ele superou as alternativas anteriores no critério específico
+de robustez nas altas, preservando duas relações nas duas validações. Produzir
+mais relações significativas não foi usado como critério suficiente.
 
-- Threshold VAR;
-- modelos assimétricos para altas e quedas;
-- MLP Granger esparsa como comparação exploratória.
+A melhora não se sustentou no fluxo completo. O Efeito Dominó perdeu cobertura
+e a modelagem assimétrica não melhorou simultaneamente F1, PR-AUC e MCC nas duas
+validações. O Granger bivariado permanece como método principal.
 
-Os resultados lineares justificam investigar primeiro assimetria ou Threshold
-VAR, pois o objetivo operacional está concentrado em altas. Uma alternativa só
-será aceita se superar o Granger atual nas duas validações temporais; produzir
-mais relações significativas não é suficiente.
+O diagnóstico anterior ao Threshold VAR foi concluído e não sustentou essa
+extensão. Os VARs permaneceram estáveis, mas houve heterocedasticidade em 35 de
+84 direções na validação 1 e em 70 de 182 na validação 2, além de caudas pesadas
+em 83 e 182 direções, respectivamente. Houve quebra CUSUM em 9 direções apenas
+na segunda validação. A triagem threshold encontrou 5 configurações viáveis,
+também somente na segunda validação, e nenhuma combinou `delta BIC >= 6` com
+ganho simultâneo de RMSE e MAE nos dois períodos. Além disso, 792 de 798
+candidatos usaram limiar zero e, na prática, repetiriam a separação entre altas
+e quedas já avaliada. Threshold VAR foi, portanto, descartado.
+
+O experimento seguinte manteve os mesmos coeficientes OLS, lags, amostras e
+previsões do Granger bivariado e alterou somente a inferência. O teste principal
+usou a covariância HAC de Newey--West calculada separadamente em cada segmento;
+HC3 funcionou como análise de sensibilidade. A correção Benjamini--Hochberg foi
+refeita separadamente para os dois métodos. Essa alternativa respondeu
+diretamente à heterocedasticidade observada sem incluir dados externos, gerar
+dados artificiais ou ampliar o modelo.
 
 ## Registro de execução e testes
 
@@ -567,11 +638,31 @@ As verificações realizadas nesta evolução foram:
 - descarte confirmado dos bancos temporários das janelas;
 - remoção dos quatro bancos `ffill_limite` 0 e 1 após a comparação, liberando
   aproximadamente `80,7 MiB` sem remover os bancos escolhidos com limite 3;
-- proteção do teste final registrada nos manifestos.
+- proteção do teste final registrada nos manifestos;
+- quatro testes unitários específicos do Granger assimétrico aprovados em
+  `0,067` segundo;
+- Granger assimétrico concluído em 26 segundos, sem erros de modelo, com duas
+  relações robustas nas altas nas duas validações;
+- seleção assimétrica congelada com os hashes do relatório e dos dois bancos de
+  validação;
+- três testes do Efeito Dominó assimétrico aprovados em `0,015` segundo e
+  comparação concluída em 30 segundos;
+- três testes da comparação de modelagem aprovados em `0,001` segundo;
+- comparação completa da modelagem concluída em `172,597` segundos, sem
+  consultar o teste final;
+- diagnóstico de regimes concluído em aproximadamente 48 segundos, sem erros
+  de modelo e sem evidência repetida que justificasse Threshold VAR.
+- cinco testes da montagem das séries aprovados em `0,164` segundo;
+- comparação diária e semanal concluída em aproximadamente 44 segundos;
+- calendário operacional derivado da CEASA concluído em aproximadamente 54
+  segundos, sem consultar o teste final.
 
-A bateria atual cobre também os quatro testes de estabilidade temporal e o
-descarte seletivo dos bancos alternativos. Todos os 24 testes passaram nos
-novos caminhos experimentais.
+A bateria registrada cobre os 24 testes anteriores, os quatro testes do modelo
+assimétrico, os três testes do Efeito Dominó assimétrico e os três testes da
+modelagem. Os três testes do diagnóstico de regimes passaram em `0,022` segundo
+e os cinco testes da inferência robusta em `0,017` segundo. Com os cinco testes
+de montagem das séries, todos os 47 testes registrados nessa evolução foram
+aprovados.
 
 ## Critérios para considerar uma melhoria real
 
@@ -582,7 +673,7 @@ Uma versão não é melhor somente por produzir mais relações significativas.
 | Estrutura | Relações mantidas, removidas, novas e invertidas |
 | Estabilidade | Frequência por janela e sobreposição de Jaccard |
 | Lags | Distribuição, escolhas no teto e diferença de BIC |
-| Inferência | p-valores, q-valores, bootstrap e estabilidade de seleção |
+| Inferência | p-valores e q-valores clássicos, HC3 e HAC |
 | Previsão Granger | Erro restrito e irrestrito fora da amostra |
 | Efeito Dominó | Eventos, cobertura e proporção positiva |
 | Classificação | F1, PR-AUC e MCC nas validações temporais |
@@ -610,10 +701,131 @@ usar o resultado final como critério de desenvolvimento.
 3. Concluído: sensibilidade ao preenchimento
 4. Concluído: Network Granger condicional por produto
 5. Concluído: frequência de seleção e direção em janelas expansivas
-6. Próximo: assimetria ou mudança de regime para altas
-7. Condicional: regularização somente com evidência de excesso de parâmetros
+6. Concluído: Granger assimétrico para altas e quedas
+7. Concluído: comparar o Efeito Dominó bivariado e assimétrico nas validações
+8. Concluído: comparar os classificadores bivariados e assimétricos nas duas
+   validações; decisão de manter o Granger bivariado
+9. Concluído: diagnosticar mudança de regime; Threshold VAR descartado
+10. Concluído: inferência robusta HC3/HAC nas duas validações; decisão de manter
+    a inferência clássica
+11. Encerrado sem avanço: nenhuma relação HAC cumpriu também a confirmação HC3
+    nos dois períodos
+12. Concluído: filtro diário de qualidade e agregação semanal; nenhuma relação
+    robusta foi comum às duas validações
+13. Concluído: calendário operacional derivado da CEASA; nenhuma relação foi
+    robusta nas duas validações
+14. Fora do escopo atual: dados externos, bootstrap, regularização e modelos
+    neurais
 ```
 
 Cada etapa deverá produzir uma nova execução versionada e ser comparada com a
 execução estável anterior. As alterações devem ser feitas separadamente para
 permitir atribuir as diferenças observadas à mudança metodológica correta.
+
+## Resultado ponta a ponta da assimetria
+
+A comparação verificou se a melhora específica do Granger chegava aos dois
+consumidores seguintes sem reutilizar, como filtro, a lista de relações comuns
+descoberta depois das validações. O protocolo adotado foi:
+
+1. manter o Efeito Dominó atual como referência;
+2. em cada divisão, usar as relações assimétricas significativas e com resposta
+   positiva que foram aprendidas no treino daquela própria divisão;
+3. calcular os limites de choque somente no respectivo treino;
+4. manter janela, limiar, dados, atributos e classificador iguais entre as duas
+   alternativas;
+5. comparar quantidade e cobertura dos eventos, proporção de propagação, F1,
+   PR-AUC e MCC nas validações 1 e 2;
+6. aceitar a troca somente se o ganho aparecesse nos dois períodos sem redução
+   incompatível de cobertura;
+7. manter o teste final protegido.
+
+Os indicadores de robustez calculados no período posterior continuam sendo
+evidência de avaliação. Eles não devem participar da seleção de relações feita
+antes desse período.
+
+A comparação do Efeito Dominó foi concluída em 30 segundos e seus três testes
+unitários passaram em `0,015` segundo. Na validação 1, as relações passaram de
+11 para 8 e os eventos classificáveis do teste de 198 para 180; a proporção
+confirmada caiu de `41,41%` para `40,56%`. Na validação 2, as relações passaram
+de 30 para 12, os eventos classificáveis de 480 para 171 e a proporção
+confirmada de `39,38%` para `39,18%`.
+
+As duas classes foram preservadas nos treinos e nas avaliações, portanto a
+comparação de classificadores continua tecnicamente possível. Isso não
+representa melhora: a queda de cobertura, especialmente de `64,4%` nos eventos
+classificáveis da validação 2, deve acompanhar a leitura das métricas.
+
+A modelagem foi concluída com o mesmo catálogo de 25 configurações e semente
+42. A referência selecionou regressão logística com `C=10`, pesos balanceados e
+limiar `0,25`. Essa configuração foi congelada e reaplicada à base assimétrica,
+sem permitir que a seleção independente da alternativa influenciasse a decisão.
+
+| Contexto | F1 bivariado/assimétrico | PR-AUC bivariado/assimétrico | MCC bivariado/assimétrico |
+| --- | ---: | ---: | ---: |
+| Validação 1 | 0,6396 / 0,5890 | 0,5282 / 0,5548 | 0,3092 / 0,2534 |
+| Validação 2 | 0,5835 / 0,5882 | 0,5106 / 0,5079 | 0,1627 / 0,2090 |
+
+Na primeira validação, somente PR-AUC melhorou. Na segunda, F1 e MCC melhoraram,
+mas PR-AUC piorou. Além disso, a segunda validação preservou apenas 171 das 480
+linhas bivariadas. Como a alternativa não superou as três métricas nos dois
+períodos, a decisão registrada foi `manter_granger_bivariado`.
+
+## Resultado da inferência robusta HC3/HAC
+
+O módulo `experimentos/granger/executar_inferencia_robusta.py` recalculou a
+evidência estatística de cada direção já testada. Ele:
+
+1. reutiliza o lag escolhido, a amostra comum e os coeficientes OLS do Granger
+   bivariado;
+2. calcula testes Wald conjuntos para os coeficientes defasados da origem;
+3. usa HAC de Newey--West segmentada como método principal, sem criar
+   autocovariâncias artificiais entre trechos descontínuos;
+4. usa HC3 como análise de sensibilidade à heterocedasticidade;
+5. refaz a correção FDR global separadamente para HC3 e HAC;
+6. preserva os diagnósticos residuais e as comparações preditivas existentes;
+7. executa somente as validações 1 e 2, mantendo o teste final protegido.
+
+O experimento não muda os coeficientes, as previsões nem a qualidade dos dados;
+ele verifica se as relações continuam significativas quando os erros-padrão
+deixam de depender das hipóteses clássicas de variância constante e ausência de
+autocorrelação. Uma relação só teria seguido para uma nova comparação com o
+Efeito Dominó se fosse HAC robusta nas duas validações e também significativa
+por HC3 nos dois períodos.
+
+Os cinco testes passaram em `0,017` segundo e a execução real terminou em 14
+segundos, sem erros de modelo. HAC reteve 10 relações na validação 1 e 22 na
+validação 2; o método clássico havia retido 11 e 30. Nove relações HAC foram
+significativas nos dois períodos e o Jaccard aumentou de `0,2812`, no clássico,
+para `0,3913`.
+
+`batata: curitiba -> londrina` foi a única relação robusta nas altas por HAC
+nos dois períodos. Na validação 1, porém, seu `q` por HC3 foi `0,05753`; na
+validação 2 foi `0,000206`. Como o limite de `0,05` e a confirmação pelos dois
+métodos foram definidos antes da execução, o critério não foi relaxado depois
+de observar o resultado. Nenhuma relação avançou para uma nova comparação com
+o Efeito Dominó e a decisão final foi `manter_inferencia_classica`.
+
+## Resultado das alternativas de montagem das séries
+
+A comparação diária e semanal preservou as fronteiras temporais e selecionou
+a configuração somente na validação 1. A série semanal com cobertura mínima de
+75% e dois lags aumentou as relações significativas comuns de 9 para 25 e o
+Jaccard de `0,2812` para `0,4545`. Apesar disso, as 3 relações robustas da
+primeira validação e as 15 da segunda não tiveram interseção. O filtro diário
+de qualidade elevou o Jaccard para `0,3913`, também sem robustez comum.
+
+O último experimento construiu um calendário operacional usando somente a base
+CEASA: um mercado foi considerado ativo quando possuía qualquer cotação bruta
+em um dia útil, e cada par utilizou apenas sessões em que ambos estavam ativos.
+A configuração com filtro de qualidade elevou as relações significativas
+comuns de 9 para 13 e o Jaccard para `0,3171`, mas não produziu nenhuma relação
+robusta em qualquer validação. Na primeira, nenhuma das 17 relações
+significativas melhorou RMSE e MAE simultaneamente; na segunda, apenas 2 de 37
+obtiveram esse ganho e falharam nos demais critérios.
+
+Com esses resultados, a investigação atual sobre Granger e montagem das séries
+foi encerrada. O pipeline oficial usa séries diárias, o método bivariado
+clássico, `ffill_limite=3`, 10 lags em amostra fixa, seleção por BIC e FDR
+global. HAC, agregação semanal, filtros de qualidade e calendário operacional
+permanecem documentados como análises de sensibilidade.

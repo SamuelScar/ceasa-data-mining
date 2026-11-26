@@ -119,6 +119,26 @@ O teste indica ganho preditivo temporal e não demonstra causalidade econômica
 por si só. Os coeficientes e as defasagens são armazenados para interpretação
 posterior.
 
+## Decisão metodológica final
+
+Depois das duas validações temporais, o pipeline oficial permanece com o
+Granger bivariado clássico descrito acima. A configuração congelada é:
+
+```text
+min_dias_comuns_observados = 400
+ffill_limite = 3
+max_lag = 10
+max_lag_amostra = 10
+selecao_lag = BIC em amostra fixa
+alpha = 0,05
+correcao = Benjamini-Hochberg global
+relacoes_consumidas = significativo_fdr
+```
+
+Os pipelines de desenvolvimento e avaliação final passam esses argumentos
+explicitamente. As variáveis `GRANGER_*` continuam disponíveis somente para o
+serviço individual e para experimentos reproduzíveis.
+
 ## Experimento de robustez dos lags
 
 O argumento `--max-lag` define quantos modelos serão testados. O argumento
@@ -322,6 +342,34 @@ deve ser consumido pelo Efeito Dominó.
 - os quatro bancos dos limites 0 e 1 foram removidos da execução de
   sensibilidade, liberando aproximadamente `80,7 MiB`;
 - os manifestos declaram `inclui_teste_final=false`.
+
+Também foram concluídos os experimentos de assimetria, mudança de regime e
+inferência robusta. A assimetria preservou duas relações robustas nas altas,
+mas perdeu cobertura no Efeito Dominó e não melhorou simultaneamente F1,
+PR-AUC e MCC nas duas validações. O diagnóstico de regimes não encontrou
+evidência repetida que justificasse Threshold VAR.
+
+Na inferência robusta, HAC reteve 10 relações na validação 1 e 22 na validação
+2, contra 11 e 30 do método clássico. Nove relações HAC foram significativas
+nos dois períodos, elevando o Jaccard de `0,2812` no método clássico para
+`0,3913`. Houve uma relação robusta nas altas por HAC nos dois períodos,
+`batata: curitiba -> londrina`, mas ela não foi confirmada por HC3 na primeira
+validação (`q=0,05753`). Como o critério foi definido antes da execução, o
+limite não foi alterado depois do resultado. A recomendação registrada foi
+`manter_inferencia_classica`.
+
+Os cinco testes da inferência robusta passaram em `0,017` segundo e os três
+testes do diagnóstico de regimes em `0,022` segundo. Considerando as baterias
+anteriores documentadas e os cinco testes de montagem das séries, foram
+aprovados 47 testes relacionados à evolução do Granger e aos consumidores
+experimentais.
+
+As alternativas de montagem das séries também foram encerradas. A agregação
+semanal elevou o Jaccard das relações significativas de `0,2812` para `0,4545`,
+mas não preservou nenhuma relação robusta nas duas validações. O calendário
+operacional derivado exclusivamente da base CEASA elevou o Jaccard para
+`0,3171`, também sem relações robustas em comum. Nenhuma alternativa substitui
+as séries diárias oficiais.
 
 ## Banco gerado
 

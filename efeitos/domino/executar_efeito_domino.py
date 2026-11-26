@@ -553,6 +553,7 @@ def gravar_banco(
     limites: pd.DataFrame,
     eventos: pd.DataFrame,
     resumo: dict[str, int],
+    metadados_relacoes: dict[str, object] | None = None,
 ) -> None:
     connection = sqlite3.connect(temporario)
     try:
@@ -566,6 +567,7 @@ def gravar_banco(
             "movimentos_simultaneos": "desconsiderados",
             "eventos": "somente cotacoes observadas",
         }
+        parametros.update(metadados_relacoes or {})
         connection.execute(
             """
             INSERT INTO execucoes_efeito_domino (

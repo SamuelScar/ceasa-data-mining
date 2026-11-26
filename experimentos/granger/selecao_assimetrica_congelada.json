@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "tipo": "selecao_granger_assimetrico",
+  "status": "congelada_como_evidencia_de_desenvolvimento",
+  "data_congelamento": "2026-11-26",
+  "inclui_teste_final": false,
+  "uso": "registrar as candidatas recorrentes; nao reutilizar esta lista como filtro para medir novamente as mesmas validacoes",
+  "metodo": {
+    "ffill_limite": 3,
+    "max_lag": 10,
+    "max_lag_amostra": 10,
+    "selecao_lag": "BIC em amostra fixa pelo max_lag",
+    "correcao_multiplos_testes": "Benjamini-Hochberg global",
+    "modelo_restrito": "intercepto + defasagens do destino + defasagens negativas da origem",
+    "modelo_irrestrito": "modelo restrito + defasagens positivas da origem",
+    "horizonte_resposta": 10
+  },
+  "criterios": {
+    "significativa_fdr_nas_duas_validacoes": true,
+    "resposta_dinamica_positiva_nas_duas_validacoes": true,
+    "residuos_adequados_nas_duas_validacoes": true,
+    "melhora_rmse_altas_nas_duas_validacoes": true,
+    "melhora_mae_altas_nas_duas_validacoes": true,
+    "minimo_observacoes_altas_por_validacao": 10,
+    "lag_igual_nas_duas_validacoes": true
+  },
+  "proveniencia": {
+    "execucao": "resultados/experimentos/sensibilidade-ffill/execucao-20261126-005710/granger-assimetrico",
+    "comparacao": {
+      "arquivo": "comparacao.json",
+      "tamanho_bytes": 6490,
+      "sha256": "03314cf529cc671c20b26c7292f09417369d349c8147e1e10e9970ac78429688"
+    },
+    "validacao_1": {
+      "arquivo": "validacao_1.sqlite",
+      "tamanho_bytes": 212992,
+      "sha256": "3132344515c6dd7316580cb1c86dcb7d5bc3b94d4f968c89fa1915ffe9a40730"
+    },
+    "validacao_2": {
+      "arquivo": "validacao_2.sqlite",
+      "tamanho_bytes": 385024,
+      "sha256": "fa612054feb226cebb443ea2788af0371b360ed6bedacc2a85b5f84bc03e42ef"
+    }
+  },
+  "relacoes": [
+    {
+      "produto": "batata",
+      "origem": "curitiba",
+      "destino": "cascavel",
+      "lag": 1,
+      "validacao_1": {
+        "q_valor_fdr": 0.0000787399230883683,
+        "resposta_acumulada": 0.304244201065853,
+        "ganho_rmse_altas_percentual": 0.12869584325969846,
+        "ganho_mae_altas_percentual": 1.324935815049533,
+        "n_observacoes_altas": 22
+      },
+      "validacao_2": {
+        "q_valor_fdr": 0.0005729865189992525,
+        "resposta_acumulada": 0.21802005849036277,
+        "ganho_rmse_altas_percentual": 2.6421800303931913,
+        "ganho_mae_altas_percentual": 3.737460183749491,
+        "n_observacoes_altas": 17
+      }
+    },
+    {
+      "produto": "batata",
+      "origem": "londrina",
+      "destino": "cascavel",
+      "lag": 1,
+      "validacao_1": {
+        "q_valor_fdr": 4.726659875098751e-7,
+        "resposta_acumulada": 0.38638484977464765,
+        "ganho_rmse_altas_percentual": 1.3830980184859174,
+        "ganho_mae_altas_percentual": 5.255970669880335,
+        "n_observacoes_altas": 22
+      },
+      "validacao_2": {
+        "q_valor_fdr": 2.426092208525627e-6,
+        "resposta_acumulada": 0.29032049632625445,
+        "ganho_rmse_altas_percentual": 5.234252265492148,
+        "ganho_mae_altas_percentual": 7.390347618765947,
+        "n_observacoes_altas": 17
+      }
+    }
+  ]
+}

@@ -24,15 +24,23 @@ PADRAO_VERSAO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 FUSO_HORARIO_VERSAO = ZoneInfo("America/Sao_Paulo")
 
 PARAMETROS_PIPELINE = (
-    "GRANGER_MIN_DIAS_COMUNS",
-    "GRANGER_FFILL_LIMITE",
-    "GRANGER_MAX_LAG",
-    "GRANGER_ALPHA",
     "DOMINO_ALTA_MINIMA",
     "DOMINO_PERCENTIL",
     "DOMINO_JANELA_DIAS",
     "TREINAMENTO_SEMENTE",
 )
+
+GRANGER_METODO_SELECIONADO = {
+    "metodo": "bivariado_classico",
+    "min_dias_comuns_observados": 400,
+    "ffill_limite": 3,
+    "max_lag": 10,
+    "max_lag_amostra": 10,
+    "selecao_lag": "BIC em amostra fixa",
+    "alpha": 0.05,
+    "correcao_multiplos_testes": "Benjamini-Hochberg global",
+    "criterio_relacoes": "significativo_fdr",
+}
 
 DIRETORIOS_CODIGO = (
     Path("preprocessamento"),
@@ -70,6 +78,21 @@ class Etapa:
     nome: str
     descricao: str
     comando: list[str]
+
+
+def argumentos_granger_selecionado() -> list[str]:
+    return [
+        "--min-dias-comuns",
+        str(GRANGER_METODO_SELECIONADO["min_dias_comuns_observados"]),
+        "--ffill-limite",
+        str(GRANGER_METODO_SELECIONADO["ffill_limite"]),
+        "--max-lag",
+        str(GRANGER_METODO_SELECIONADO["max_lag"]),
+        "--max-lag-amostra",
+        str(GRANGER_METODO_SELECIONADO["max_lag_amostra"]),
+        "--alpha",
+        str(GRANGER_METODO_SELECIONADO["alpha"]),
+    ]
 
 
 def agora_iso() -> str:
@@ -187,6 +210,7 @@ def construir_etapas(raiz: Path) -> tuple[list[Etapa], dict[str, Path]]:
                         contexto.corte_treino,
                         "--data-fim-teste",
                         contexto.fim_avaliacao,
+                        *argumentos_granger_selecionado(),
                     ],
                 ),
                 Etapa(
@@ -311,6 +335,7 @@ def executar() -> int:
         "inclui_teste_final": False,
         "contextos": [asdict(contexto) for contexto in CONTEXTOS],
         "parametros": {nome: os.getenv(nome) for nome in PARAMETROS_PIPELINE},
+        "metodologia_granger": GRANGER_METODO_SELECIONADO,
         "codigo": registrar_codigo(),
         "entrada": {
             "caminho": str(ENTRADA_BRUTA),
