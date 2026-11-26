@@ -166,13 +166,19 @@ exclusiva do contexto final e, antes do ajuste, confere:
 - lista exata das quatro views de desenvolvimento;
 - modelo e hiperparâmetros pertencentes ao catálogo implementado;
 - registro das duas bases usadas no desenvolvimento;
-- igualdade da assinatura metodológica entre validações e contexto final;
+- igualdade da assinatura metodológica entre validações e contexto final, com
+  compatibilidade restrita à migração do Granger schema 2 para 3 quando ela
+  acrescenta somente os diagnósticos de altas já definidos;
 - lista e assinatura dos atributos;
 - política congelada da análise de sensibilidade da cobertura.
 
 Depois dessas verificações, o modelo é ajustado em `treino_final`. A visão
 `teste_final` só é lida após o término desse ajuste. O limiar selecionado não é
 recalculado.
+
+Essa compatibilidade não aceita alterações em parâmetros, relações, atributos
+ou critérios estatísticos. As assinaturas da seleção e da base final continuam
+preservadas nos artefatos para auditoria.
 
 São preservados em `resultados/avaliacoes-finais/<nome>/`:
 
@@ -182,6 +188,20 @@ São preservados em `resultados/avaliacoes-finais/<nome>/`:
   acompanhado de metadados e hashes.
 
 Cada avaliação usa um diretório novo e não sobrescreve artefatos oficiais.
+
+Se as quatro primeiras etapas tiverem sido concluídas e somente a avaliação do
+modelo falhar, a execução pode ser retomada sem reconstruir os bancos:
+
+```bash
+PIPELINE_SELECAO_JSON=resultados/versoes/EXECUCAO/treinamento/configuracao_selecionada.json \
+PIPELINE_AVALIACAO_FINAL_VERSAO=avaliacao-final-AAAAMMDD-HHMMSS \
+PIPELINE_AVALIACAO_FINAL_RETOMAR=1 \
+  docker compose run --build --rm pipeline-avaliacao-final
+```
+
+A retomada exige a mesma seleção, verifica os quatro artefatos existentes, não
+sobrescreve métricas ou modelo e preserva no manifesto a falha anterior e os
+hashes do código usado na recuperação.
 
 ## Sensibilidade dos rótulos negativos à cobertura
 
@@ -201,6 +221,35 @@ avaliação final repete a mesma análise com a política já congelada no JSON 
 seleção. `dias_observados_destino` é armazenado para auditoria, mas não integra
 os atributos preditores.
 
+## Resultado da investigação do treinamento
+
+A execução de desenvolvimento `execucao-20261125-230051` foi usada para testar
+alternativas sem consultar novamente o teste final. O baseline congelado obteve
+F1 médio de `0,6115`, PR-AUC média de `0,5194` e MCC médio de `0,2359` nas duas
+validações temporais.
+
+Foram avaliados:
+
+- ponderação por grupo e cobertura, além da interação produto--origem--destino;
+- redução de atributos e regularizações L1, L2 e elastic net;
+- exclusão ou ponderação de rótulos próximos ao limite e regressão da margem;
+- filtros das relações por resíduos adequados e q-valor;
+- horizontes de resposta de 1, 3 e 5 dias úteis com negativos condicionados à
+  cobertura completa.
+
+Nenhuma alternativa melhorou simultaneamente PR-AUC e MCC nas duas validações.
+O horizonte de cinco dias com cobertura completa aumentou F1 e PR-AUC, mas
+removeu 28 negativos da validação 1 e 76 da validação 2 sem alterar os rótulos
+restantes. Com isso, o MCC caiu de `0,3092` para `0,1985` na validação 1 e de
+`0,1627` para `0,1233` na validação 2. O ganho aparente veio da retirada de
+negativos difíceis, não de melhor separação entre as classes.
+
+As decisões mantidas são: passagem das relações significativas após FDR,
+janela de resposta de cinco dias úteis, regra atual para negativos e
+classificador congelado. Os executores e resultados descartáveis desses
+experimentos não integram o pipeline oficial; as conclusões ficam registradas
+neste documento.
+
 ## Estado atual
 
 Situação em 26 de novembro de 2026:
@@ -211,11 +260,12 @@ Situação em 26 de novembro de 2026:
   conteúdo lógico do banco principal;
 - o experimento de pré-processamento paralelo e a execução versionada
   interrompida foram descartados; seus artefatos locais também foram removidos;
-- o fluxo de desenvolvimento contextual ainda precisa ser executado por
-  completo para produzir as duas validações e um novo
-  `configuracao_selecionada.json`;
-- a avaliação final permanece protegida e o teste oficial não deve ser
-  consultado durante a evolução metodológica.
+- o fluxo contextual foi concluído na execução `execucao-20261125-230051` e
+  produziu a configuração congelada usada pelos experimentos;
+- a avaliação final `avaliacao-final-20261126-140147` foi concluída com F1 de
+  `0,5912`, PR-AUC de `0,5808` e MCC de `0,1958`;
+- o teste final permanece protegido e não deve ser consultado novamente durante
+  a evolução metodológica.
 
 ## Evolução da causalidade de Granger
 

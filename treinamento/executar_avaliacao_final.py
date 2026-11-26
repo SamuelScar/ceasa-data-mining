@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import pickle
@@ -41,6 +42,15 @@ from treinamento.comum import (
     validar_base,
     validar_separacao_temporal,
 )
+
+
+DIAGNOSTICOS_ALTAS_GRANGER_SCHEMA_3 = {
+    "altas_destino": (
+        "retorno acima do maior entre zero e o percentil 0.90 "
+        "do destino no treino"
+    ),
+    "min_observacoes_altas_teste": 10,
+}
 
 
 def agora_iso() -> str:
@@ -160,6 +170,70 @@ def carregar_configuracao_modelo(documento: dict[str, Any]) -> ConfiguracaoModel
     return configuracao
 
 
+def carregar_metodologia(parametros: object) -> dict[str, Any] | None:
+    if isinstance(parametros, str):
+        try:
+            parametros = json.loads(parametros)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(parametros, dict):
+        return None
+    metodologia = parametros.get("metodologia")
+    return copy.deepcopy(metodologia) if isinstance(metodologia, dict) else None
+
+
+def normalizar_migracao_diagnostica(
+    metodologia: dict[str, Any],
+) -> dict[str, Any] | None:
+    normalizada = copy.deepcopy(metodologia)
+    schemas = normalizada.get("schemas_fontes")
+    granger = normalizada.get("granger")
+    if not isinstance(schemas, dict) or not isinstance(granger, dict):
+        return None
+
+    schema_granger = schemas.get("granger")
+    if schema_granger == 2:
+        if any(chave in granger for chave in DIAGNOSTICOS_ALTAS_GRANGER_SCHEMA_3):
+            return None
+        schemas["granger"] = 3
+        granger.update(DIAGNOSTICOS_ALTAS_GRANGER_SCHEMA_3)
+    elif schema_granger == 3:
+        if any(
+            granger.get(chave) != valor
+            for chave, valor in DIAGNOSTICOS_ALTAS_GRANGER_SCHEMA_3.items()
+        ):
+            return None
+    else:
+        return None
+    return normalizada
+
+
+def migracao_diagnostica_compativel(
+    documento: dict[str, Any],
+    execucao_base: dict[str, Any],
+) -> bool:
+    metodologia_final = carregar_metodologia(execucao_base.get("parametros_json"))
+    if metodologia_final is None:
+        return False
+    metodologia_final = normalizar_migracao_diagnostica(metodologia_final)
+    if metodologia_final is None:
+        return False
+
+    bases = documento.get("bases_modelagem")
+    if not isinstance(bases, dict):
+        return False
+    for contexto in ("validacao_1", "validacao_2"):
+        base = bases.get(contexto)
+        if not isinstance(base, dict):
+            return False
+        metodologia = carregar_metodologia(base.get("parametros_json"))
+        if metodologia is None:
+            return False
+        if normalizar_migracao_diagnostica(metodologia) != metodologia_final:
+            return False
+    return True
+
+
 def validar_selecao_com_base(
     documento: dict[str, Any],
     execucao_base: dict[str, Any],
@@ -167,11 +241,21 @@ def validar_selecao_com_base(
 ) -> None:
     if execucao_base.get("contexto") != "final":
         raise ValueError("a avaliação oficial exige uma base do contexto final")
-    if str(documento["metodologia_sha256"]) != str(
+    metodologia_igual = str(documento["metodologia_sha256"]) == str(
         execucao_base.get("metodologia_sha256")
+    )
+    if not metodologia_igual and not migracao_diagnostica_compativel(
+        documento,
+        execucao_base,
     ):
         raise ValueError(
             "a metodologia da base final difere da usada nas validações"
+        )
+    if not metodologia_igual:
+        print(
+            "Compatibilidade confirmada: Granger schema 2 -> 3 acrescentou "
+            "somente diagnósticos de altas.",
+            flush=True,
         )
     if documento["atributos"] != atributos.como_dict():
         raise ValueError("o catálogo de atributos mudou após a seleção")

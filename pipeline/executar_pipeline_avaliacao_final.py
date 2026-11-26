@@ -100,6 +100,17 @@ def obter_versao() -> tuple[str, bool]:
     return valor, False
 
 
+def retomada_solicitada() -> bool:
+    valor = os.getenv("PIPELINE_AVALIACAO_FINAL_RETOMAR", "0").strip().lower()
+    if valor in {"", "0", "false", "nao", "não"}:
+        return False
+    if valor in {"1", "true", "sim"}:
+        return True
+    raise ValueError(
+        "PIPELINE_AVALIACAO_FINAL_RETOMAR deve ser 0 ou 1"
+    )
+
+
 def construir_etapas(
     raiz: Path,
     selecao: Path,
@@ -195,10 +206,149 @@ def construir_etapas(
     return etapas, artefatos
 
 
+def carregar_manifesto_falho(path: Path, versao: str) -> dict[str, object]:
+    try:
+        manifesto = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as erro:
+        raise ValueError("não foi possível ler o manifesto da retomada") from erro
+    if manifesto.get("tipo") != "avaliacao_final":
+        raise ValueError("o manifesto não representa uma avaliação final")
+    if manifesto.get("versao") != versao:
+        raise ValueError("a versão informada diverge do manifesto")
+    if manifesto.get("status") != "falha":
+        raise ValueError("somente uma avaliação com falha pode ser retomada")
+    falha = manifesto.get("falha")
+    if not isinstance(falha, dict) or falha.get("etapa") != "Avaliação final":
+        raise ValueError("a retomada só é permitida para falha na etapa final")
+    return manifesto
+
+
+def retomar_avaliacao(
+    raiz: Path,
+    versao: str,
+    selecao_origem: Path,
+) -> int:
+    caminho_manifesto = raiz / "manifesto.json"
+    manifesto = carregar_manifesto_falho(caminho_manifesto, versao)
+    selecao_copia = raiz / "treinamento/configuracao_selecionada.json"
+    selecao_registrada = manifesto.get("selecao_origem")
+    if not isinstance(selecao_registrada, dict):
+        raise ValueError("o manifesto não registra a seleção original")
+    hash_selecao = sha256_arquivo(selecao_origem)
+    if (
+        not selecao_copia.is_file()
+        or hash_selecao != selecao_registrada.get("sha256")
+        or hash_selecao != sha256_arquivo(selecao_copia)
+    ):
+        raise ValueError("a seleção da retomada diverge da execução original")
+
+    etapas, artefatos = construir_etapas(raiz, selecao_copia)
+    entradas_necessarias = (
+        artefatos["preprocessamento"],
+        artefatos["granger"],
+        artefatos["efeito_domino"],
+        artefatos["base_modelagem"],
+    )
+    ausentes = [str(path) for path in entradas_necessarias if not path.is_file()]
+    if ausentes:
+        raise ValueError(
+            "a retomada não encontrou os artefatos concluídos: "
+            + ", ".join(ausentes)
+        )
+    saidas = (artefatos["avaliacao_final"], artefatos["modelo_final"])
+    existentes = [str(path) for path in saidas if path.exists()]
+    if existentes:
+        raise ValueError(
+            "a retomada não sobrescreve saídas existentes: "
+            + ", ".join(existentes)
+        )
+
+    falhas_anteriores = manifesto.setdefault("falhas_anteriores", [])
+    if not isinstance(falhas_anteriores, list):
+        raise ValueError("o histórico de falhas do manifesto é inválido")
+    falhas_anteriores.append(manifesto.pop("falha"))
+    retomadas = manifesto.setdefault("retomadas", [])
+    if not isinstance(retomadas, list):
+        raise ValueError("o histórico de retomadas do manifesto é inválido")
+    retomada: dict[str, object] = {
+        "iniciada_em": agora_iso(),
+        "concluida_em": None,
+        "status": "em_andamento",
+        "codigo": registrar_codigo(),
+    }
+    retomadas.append(retomada)
+    duracao_anterior = float(manifesto.get("duracao_segundos") or 0.0)
+    manifesto["status"] = "em_andamento"
+    manifesto["concluida_em"] = None
+    gravar_manifesto(caminho_manifesto, manifesto)
+
+    etapa = etapas[-1]
+    inicio = perf_counter()
+    painel = PainelPipeline(f"Retomada — {versao}", 1)
+    with painel:
+        painel.iniciar_etapa(1, etapa.nome, etapa.descricao)
+        codigo_saida = executar_comando(etapa.comando, painel)
+        duracao_retomada = round(perf_counter() - inicio, 3)
+        if codigo_saida != 0:
+            retomada.update(
+                {
+                    "concluida_em": agora_iso(),
+                    "status": "falha",
+                    "duracao_segundos": duracao_retomada,
+                }
+            )
+            manifesto["status"] = "falha"
+            manifesto["concluida_em"] = agora_iso()
+            manifesto["duracao_segundos"] = round(
+                duracao_anterior + duracao_retomada,
+                3,
+            )
+            manifesto["falha"] = {
+                "etapa": etapa.nome,
+                "codigo_saida": codigo_saida,
+            }
+            gravar_manifesto(caminho_manifesto, manifesto)
+            painel.falhar_etapa(etapa.nome, codigo_saida)
+            painel.exibir_log()
+            return codigo_saida
+
+        concluidas = manifesto.get("etapas_concluidas")
+        if not isinstance(concluidas, list):
+            raise ValueError("o manifesto não registra as etapas concluídas")
+        concluidas.append(
+            {
+                "nome": etapa.nome,
+                "duracao_segundos": duracao_retomada,
+                "retomada": True,
+            }
+        )
+        retomada.update(
+            {
+                "concluida_em": agora_iso(),
+                "status": "concluida",
+                "duracao_segundos": duracao_retomada,
+            }
+        )
+        manifesto["artefatos"] = metadados_artefatos(raiz, artefatos)
+        manifesto["status"] = "concluida"
+        manifesto["concluida_em"] = agora_iso()
+        manifesto["duracao_segundos"] = round(
+            duracao_anterior + duracao_retomada,
+            3,
+        )
+        gravar_manifesto(caminho_manifesto, manifesto)
+        painel.concluir_etapa(1, etapa.nome)
+        painel.finalizar()
+
+    print(f"\nAvaliação final retomada e preservada em: {raiz}", flush=True)
+    return 0
+
+
 def executar() -> int:
     try:
         selecao_origem = obter_selecao()
         versao, versao_automatica = obter_versao()
+        retomar = retomada_solicitada()
     except ValueError as erro:
         print(f"ERRO: {erro}", flush=True)
         return 2
@@ -208,6 +358,18 @@ def executar() -> int:
         return 2
 
     raiz = RAIZ_RESULTADOS / versao
+    if retomar:
+        if versao_automatica:
+            print(
+                "ERRO: a retomada exige PIPELINE_AVALIACAO_FINAL_VERSAO.",
+                flush=True,
+            )
+            return 2
+        try:
+            return retomar_avaliacao(raiz, versao, selecao_origem)
+        except ValueError as erro:
+            print(f"ERRO: {erro}", flush=True)
+            return 2
     if raiz.exists():
         print(f"ERRO: a avaliação {versao!r} já existe em {raiz}.", flush=True)
         return 2
